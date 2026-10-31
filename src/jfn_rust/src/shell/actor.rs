@@ -748,10 +748,12 @@ impl Loop {
             }
             Work::Redraw => {}
             Work::OpenAbout => {
+                jfn_logging::diagnostics::mark(jfn_logging::diagnostics::Action::About);
                 self.model.transition(Transition::OpenAbout);
                 self.discard_cache();
             }
             Work::OpenClientSettings => {
+                jfn_logging::diagnostics::mark(jfn_logging::diagnostics::Action::Settings);
                 self.model.transition(Transition::OpenClientSettings);
                 self.discard_cache();
             }

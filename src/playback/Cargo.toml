@@ -9,6 +9,7 @@ name = "jfn_playback"
 crate-type = ["rlib"]
 
 [dependencies]
+jfn-logging = { path = "../logging" }
 crossbeam-channel.workspace = true
 crossbeam-utils.workspace = true
 parking_lot.workspace = true

@@ -1,20 +1,21 @@
 # Shared MSVC + bindgen environment setup, dot-sourced by build.ps1 and
-# the justfile's Windows clippy recipe. Loads vcvars64 (cl/INCLUDE/LIB)
+# the justfile's Windows clippy recipe. Loads native MSVC (cl/INCLUDE/LIB)
 # and points bindgen at msys64's libclang.
 
 $ErrorActionPreference = "Stop"
+$MsvcArch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
 
 if (-not $env:VSINSTALLDIR) {
     Write-Host "MSVC environment not detected." -ForegroundColor Yellow
-    Write-Host "Attempting to load vcvars64.bat..."
+    Write-Host "Attempting to load vcvarsall.bat ($MsvcArch)..."
 
     $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $VsWhere) {
         $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-        $VcVars = Join-Path $VsPath "VC\Auxiliary\Build\vcvars64.bat"
+        $VcVars = Join-Path $VsPath "VC\Auxiliary\Build\vcvarsall.bat"
         if (Test-Path $VcVars) {
             $TempBat = Join-Path $env:TEMP "jfn_vcvars_build.bat"
-            Set-Content $TempBat -Value ('@call "' + $VcVars + '"') -Encoding ASCII
+            Set-Content $TempBat -Value ('@call "' + $VcVars + '" ' + $MsvcArch) -Encoding ASCII
             Add-Content $TempBat -Value '@set' -Encoding ASCII
             cmd /c $TempBat | ForEach-Object {
                 if ($_ -match "^([^=]+)=(.*)$") {

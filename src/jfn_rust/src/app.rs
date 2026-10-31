@@ -907,6 +907,13 @@ pub fn jfn_app_main() -> c_int {
     let opts = resolve_startup_options(&cli);
 
     init_logging(opts.log_file.as_deref(), &opts.log_level, &version);
+    let _diagnostic_session = match jfn_logging::diagnostics::start() {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::warn!(target: "Main", "Diagnostic timeline unavailable: {error}");
+            None
+        }
+    };
     let locale = match jfn_platform_abi::lang::detect_with_preference(&jfn_config::shell_language())
     {
         Ok(locale) => locale,

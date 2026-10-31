@@ -78,8 +78,32 @@ pub fn jfn_playback_ingest_mpv_event_owned(
     event: &Event,
     platform: &dyn jfn_platform_abi::Platform,
 ) -> u8 {
+    if let Some(action) = diagnostic_action(event) {
+        jfn_logging::diagnostics::mark(action);
+    }
     let outs = ingest_event_for_ffi(event, state(), &PlatformCtx(platform));
     dispatch(outs)
+}
+
+fn diagnostic_action(event: &Event) -> Option<jfn_logging::diagnostics::Action> {
+    use jfn_logging::diagnostics::Action;
+    match event {
+        Event::StartFile => Some(Action::Load),
+        Event::FileLoaded => Some(Action::Loaded),
+        Event::EndFile(_) => Some(Action::End),
+        Event::Seek => Some(Action::Seek),
+        Event::PlaybackRestart => Some(Action::PlaybackRestart),
+        Event::PropertyChange {
+            id,
+            value: PropertyValue::Flag(paused),
+            ..
+        } if *id == crate::ingest::observe_id::PAUSE => Some(if *paused {
+            Action::Pause
+        } else {
+            Action::Resume
+        }),
+        _ => None,
+    }
 }
 
 /// Reconcile the playback window mode from the current window snapshot.
@@ -339,10 +363,43 @@ fn ingest_event(event: Event) -> bool {
     let Some(lease) = jfn_platform_abi::try_lease() else {
         return false;
     };
-    let outs = ingest_event_for_ffi(&event, state(), &PlatformCtx(lease.platform()));
-    if dispatch(outs) & INGEST_FLAG_SHUTDOWN != 0 {
+    if jfn_playback_ingest_mpv_event_owned(&event, lease.platform()) & INGEST_FLAG_SHUTDOWN != 0 {
         invoke_shutdown_handler();
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use jfn_logging::diagnostics::Action;
+
+    #[test]
+    fn markers_follow_observed_pause_and_not_command_replies() {
+        for (paused, expected) in [(true, Action::Pause), (false, Action::Resume)] {
+            let event = Event::PropertyChange {
+                id: crate::ingest::observe_id::PAUSE,
+                name: "pause".into(),
+                value: PropertyValue::Flag(paused),
+            };
+            assert_eq!(diagnostic_action(&event), Some(expected));
+        }
+        assert_eq!(
+            diagnostic_action(&Event::CommandReply { reply: 1, error: 0 }),
+            None
+        );
+    }
+
+    #[test]
+    fn high_frequency_position_events_do_not_enter_timeline() {
+        let event = Event::PropertyChange {
+            id: crate::ingest::observe_id::TIME_POS,
+            name: "time-pos".into(),
+            value: PropertyValue::Double(120.0),
+        };
+        assert_eq!(diagnostic_action(&event), None);
+        assert_eq!(diagnostic_action(&Event::StartFile), Some(Action::Load));
+        assert_eq!(diagnostic_action(&Event::FileLoaded), Some(Action::Loaded));
+    }
 }

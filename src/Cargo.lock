@@ -3121,6 +3121,7 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-utils",
  "jfn-js-json",
+ "jfn-logging",
  "jfn-mpv",
  "jfn-platform-abi",
  "jfn-wake-event",

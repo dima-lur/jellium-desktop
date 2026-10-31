@@ -51,6 +51,21 @@ test: build
 test-web:
     node --test src/web/tests/bridge.test.cjs
 
+# Offline diagnostic report regression tests
+[group('test')]
+test-diagnostics:
+    node --test dev/diagnostics/report.test.cjs
+
+# Launch a Windows diagnostic session; close the app to finish capture
+[windows]
+[group('diagnostics')]
+diagnose directory:
+    & 'dev/diagnostics/capture.ps1' -Launch -OutputDirectory '{{directory}}'
+
+[group('diagnostics')]
+diagnostic-report directory:
+    node dev/diagnostics/report.cjs '{{directory}}'
+
 # Format workspace
 [group('lint')]
 fmt:

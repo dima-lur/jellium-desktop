@@ -9,6 +9,7 @@
 //! subprocesses, ffmpeg) is captured by a pipe-and-poll thread and
 //! re-emitted as `[CEF]` debug records.
 
+pub mod diagnostics;
 mod redact;
 
 use parking_lot::Mutex;
