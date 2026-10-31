@@ -1,8 +1,8 @@
 //! A CEF accelerated-paint texture, selected statically per platform.
 //!
 //! CEF reclaims the resources backing a frame when the paint callback returns.
-//! The Linux constructor therefore receives already-duplicated plane fds;
-//! Windows and macOS consume their borrowed handles inline during the callback.
+//! Constructors describe callback-scoped resources. `capture` copies their
+//! contents to an owned texture and clears the borrowed handles before handoff.
 
 /// Integer texture extent used by the paint crate without depending on the
 /// platform ABI's geometry types.
@@ -33,6 +33,7 @@ pub struct DmabufPlane {
 
 #[cfg(target_os = "linux")]
 pub struct SharedTexture {
+    pub(crate) owned: Option<wgpu::Texture>,
     coded: FrameSize,
     visible_rect: FrameSize,
     format: DmabufFormat,
@@ -51,6 +52,7 @@ impl SharedTexture {
         planes: Vec<DmabufPlane>,
     ) -> Self {
         Self {
+            owned: None,
             coded,
             visible_rect,
             format,
@@ -86,6 +88,7 @@ impl SharedTexture {
 
 #[cfg(windows)]
 pub struct SharedTexture {
+    pub(crate) owned: Option<wgpu::Texture>,
     handle: *mut std::ffi::c_void,
     coded: FrameSize,
     visible_rect: FrameSize,
@@ -95,6 +98,7 @@ pub struct SharedTexture {
 impl SharedTexture {
     pub fn new(handle: *mut std::ffi::c_void, coded: FrameSize, visible_rect: FrameSize) -> Self {
         Self {
+            owned: None,
             handle,
             coded,
             visible_rect,
@@ -120,6 +124,7 @@ impl SharedTexture {
 
 #[cfg(target_os = "macos")]
 pub struct SharedTexture {
+    pub(crate) owned: Option<wgpu::Texture>,
     io_surface: *mut std::ffi::c_void,
     coded: FrameSize,
     visible_rect: FrameSize,
@@ -133,6 +138,7 @@ impl SharedTexture {
         visible_rect: FrameSize,
     ) -> Self {
         Self {
+            owned: None,
             io_surface,
             coded,
             visible_rect,
@@ -153,6 +159,30 @@ impl SharedTexture {
 
     pub fn visible(&self) -> FrameSize {
         visible_or_coded(self.visible_rect, self.coded)
+    }
+}
+
+impl SharedTexture {
+    /// Detach this frame from CEF before its paint callback returns.
+    /// Duplicating a handle alone does not stop CEF recycling its pixels.
+    pub fn capture(mut self) -> Option<Self> {
+        let gpu = crate::surfaces()?;
+        self.owned = Some(gpu.capture(&self)?);
+        #[cfg(target_os = "linux")]
+        self.planes.clear();
+        #[cfg(windows)]
+        {
+            self.handle = std::ptr::null_mut();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.io_surface = std::ptr::null_mut();
+        }
+        Some(self)
+    }
+
+    pub fn is_owned(&self) -> bool {
+        self.owned.is_some()
     }
 }
 

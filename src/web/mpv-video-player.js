@@ -104,6 +104,7 @@
             await this.createMediaElement(options);
             console.debug(`[Media] [${this.logTag}] createMediaElement done, calling setCurrentSrc`);
             const result = await this.setCurrentSrc(options);
+            if (result?.canceled) return result;
 
             // needed when only audio is single external
             const externalAudio = options.mediaSource?.MediaStreams?.find(s => s.Type === 'Audio' && s.IsExternal);
@@ -276,9 +277,7 @@
                 this._videoDialog = dlg;
 
                 this.connectSignals();
-                if (window.jmpNative) {
-                    window.jmpNative.notifyRateChange(this._playRate);
-                }
+
             } else {
                 this._videoDialog = dlg;
             }
@@ -321,7 +320,7 @@
 
         setPlaybackRate(value) {
             super.setPlaybackRate(value);
-            if (window.jmpNative) window.jmpNative.notifyRateChange(value);
+
         }
 
         canSetAudioStreamIndex() { return !this._forceServerReload; }

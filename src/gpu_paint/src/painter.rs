@@ -723,7 +723,11 @@ fn check_buffer(frame: &Pixels<'_>, fw: u32, fh: u32) -> Result<(), SurfaceLost>
 
 /// The one bind group shape this crate draws with: the texture at binding 0,
 /// the shared nearest sampler at binding 1.
-fn bind_texture(ctx: &Surfaces, label: &str, texture: &wgpu::Texture) -> wgpu::BindGroup {
+pub(crate) fn bind_texture(
+    ctx: &Surfaces,
+    label: &str,
+    texture: &wgpu::Texture,
+) -> wgpu::BindGroup {
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),

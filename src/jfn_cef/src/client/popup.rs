@@ -93,7 +93,11 @@ impl Inner {
             }
             // Blink's popup rect (p.x/p.y) flips above the element near the
             // window bottom; the anchor keeps the menu under the box.
-            let (x, y) = p.anchor.unwrap_or((p.x, p.y));
+            let (x, y) = if matches!(self.dropdown(), MenuDelivery::Host(_)) {
+                p.anchor.unwrap_or((p.x, p.y))
+            } else {
+                (p.x, p.y)
+            };
             (
                 x,
                 y,
@@ -105,23 +109,28 @@ impl Inner {
             )
         };
 
-        let inner = Arc::clone(self);
-        let on_selected = MenuSelection::new(move |idx| {
-            let authority = Arc::clone(&inner.session);
-            authority.dispatch(|| {
-                let mut task = DispatchPopupTask::new(inner, idx, selected, selectable.clone());
-                let _ = post_task(ThreadId::UI, Some(&mut task));
-            });
-        });
         match self.dropdown() {
-            MenuDelivery::Host(host) => host.open(MenuRequest {
-                items: options_as_items(&opts),
-                x,
-                y,
-                width: w,
-                initial: selected,
-                on_selected,
-            }),
+            MenuDelivery::Host(host) => {
+                // Dropping a selection dismisses Blink's popup. Only a host
+                // menu owns one; composited popups receive CEF input directly.
+                let inner = Arc::clone(self);
+                let on_selected = MenuSelection::new(move |idx| {
+                    let authority = Arc::clone(&inner.session);
+                    authority.dispatch(|| {
+                        let mut task =
+                            DispatchPopupTask::new(inner, idx, selected, selectable.clone());
+                        let _ = post_task(ThreadId::UI, Some(&mut task));
+                    });
+                });
+                host.open(MenuRequest {
+                    items: options_as_items(&opts),
+                    x,
+                    y,
+                    width: w,
+                    initial: selected,
+                    on_selected,
+                });
+            }
             MenuDelivery::Composited => self.surface().popup_show(x, y, w, h),
             MenuDelivery::Page => {}
         }

@@ -807,6 +807,32 @@ impl Runner {
         vps: ViewportState,
         frame: &SharedTexture,
     ) -> Result<Committed, PresentError> {
+        if frame.is_owned() {
+            let (Backend::Gpu { painter }, Some(gpu)) = (&mut self.backend, self.gpu) else {
+                return Err(PresentError::DmabufCreate);
+            };
+            if painter.is_none() {
+                let target = layer.window_target().ok_or(PresentError::DmabufCreate)?;
+                *painter = Some(Box::new(
+                    gpu.new_surface(target, frame.coded())
+                        .map_err(|e| PresentError::Gpu(PresentFailed::from(e)))?,
+                ));
+            }
+            let painter = painter.as_mut().ok_or(PresentError::DmabufCreate)?;
+            painter.resize(PhysicalSize {
+                w: vps.pw.max(1),
+                h: vps.ph.max(1),
+            });
+            painter.present_shared(frame, || {
+                layer.set_viewport(
+                    frame.visible().w.min(vps.pw),
+                    frame.visible().h.min(vps.ph),
+                    vps.lw,
+                    vps.lh,
+                );
+            })?;
+            return Ok(Committed::issued());
+        }
         let (vw, vh) = (frame.visible().w, frame.visible().h);
         let Some(pos) = self.lease_dmabuf(frame) else {
             return Err(PresentError::DmabufCreate);

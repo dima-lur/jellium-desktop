@@ -28,6 +28,7 @@ pub mod settings_overlay;
 pub mod spinner;
 pub mod state;
 pub mod theme;
+mod work_queue;
 
 use std::sync::OnceLock;
 

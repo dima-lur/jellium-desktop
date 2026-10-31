@@ -77,6 +77,39 @@ fn round_trip_no_truncation() {
 }
 
 #[test]
+fn bounded_instance_protocol_rejects_large_frames_and_keeps_serving() {
+    use jfn_instance_ipc::jfn::{
+        REQUEST_FRAME_BYTES, RESPONSE_FRAME_BYTES, Request, Response, handle,
+    };
+    let rt = rt();
+    let (_dir, instance) = scratch_instance();
+    let listener = rt.block_on(Listener::try_start_with_limit(
+        &instance,
+        handle,
+        Some(REQUEST_FRAME_BYTES),
+    ));
+    assert!(matches!(listener, Start::Started(_)));
+    rt.block_on(async {
+        let mut bad = Stream::connect(&instance).await.unwrap();
+        bad.send(&Req {
+            payload: "x".repeat(REQUEST_FRAME_BYTES),
+        })
+        .await
+        .unwrap();
+        assert!(matches!(bad.recv::<Response>().await, Ok(None) | Err(_)));
+        let mut good = Stream::connect(&instance)
+            .await
+            .unwrap()
+            .with_frame_limit(RESPONSE_FRAME_BYTES);
+        good.send(&Request::Ping).await.unwrap();
+        assert!(matches!(
+            good.recv::<Response>().await.unwrap(),
+            Some(Response::Pong)
+        ));
+    });
+}
+
+#[test]
 fn many_frames_one_connection() {
     let rt = rt();
     let (_dir, instance) = scratch_instance();

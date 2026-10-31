@@ -56,7 +56,7 @@
     function createSignal(name) {
         const callbacks = [];
         const signal = function(...args) {
-            for (const cb of callbacks) {
+            for (const cb of [...callbacks]) {
                 try { cb(...args); } catch(e) { console.error('[Media] [Signal] ' + name + ' error:', e); }
             }
         };
@@ -201,20 +201,25 @@
             // Methods
             load(url, options, streamdata, videoStream, audioStream, subtitleStream, externalAudioUrl, externalSubUrl, callback) {
                 console.debug('[Media] player.load:', url);
+                this._cancelLoad?.();
                 if (callback) {
-                    // Wait for playing signal before calling callback
-                    const onPlaying = () => {
-                        this.playing.disconnect(onPlaying);
-                        this.error.disconnect(onError);
-                        callback();
+                    let pending = true;
+                    const cleanup = () => {
+                        for (const name of ['playing', 'error']) this[name].disconnect(complete);
+                        for (const name of ['canceled', 'finished', 'stopped']) this[name].disconnect(cancel);
+                        if (this._cancelLoad === cancel) this._cancelLoad = null;
                     };
-                    const onError = () => {
-                        this.playing.disconnect(onPlaying);
-                        this.error.disconnect(onError);
-                        callback();
+                    const finish = canceled => {
+                        if (!pending) return;
+                        pending = false;
+                        cleanup();
+                        callback(canceled ? { canceled: true } : undefined);
                     };
-                    this.playing.connect(onPlaying);
-                    this.error.connect(onError);
+                    const complete = () => finish(false);
+                    const cancel = () => finish(true);
+                    for (const name of ['playing', 'error']) this[name].connect(complete);
+                    for (const name of ['canceled', 'finished', 'stopped']) this[name].connect(cancel);
+                    this._cancelLoad = cancel;
                 }
                 if (window.jmpNative && window.jmpNative.playerLoad) {
                     const metadataJson = streamdata?.metadata ? JSON.stringify(streamdata.metadata) : '{}';
@@ -223,17 +228,18 @@
             },
             stop() {
                 console.debug('[Media] player.stop');
+                this._cancelLoad?.();
                 if (window.jmpNative) window.jmpNative.playerStop();
             },
             pause() {
                 console.debug('[Media] player.pause');
                 if (window.jmpNative) window.jmpNative.playerPause();
-                playerState.paused = true;
+
             },
             play() {
                 console.debug('[Media] player.play');
                 if (window.jmpNative) window.jmpNative.playerPlay();
-                playerState.paused = false;
+
             },
             seekTo(ms) {
                 console.debug('[Media] player.seekTo:', ms);

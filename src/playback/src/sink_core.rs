@@ -93,8 +93,10 @@ impl PositionThrottle {
 // =====================================================================
 
 mod harness {
-    use crossbeam_channel::{Receiver, Sender, bounded};
+    use parking_lot::Condvar;
     use parking_lot::Mutex;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
     use std::sync::Once;
 
     use crate::types::{PlaybackEvent, PlaybackEventKind};
@@ -136,13 +138,37 @@ mod harness {
         fn teardown(&mut self);
     }
 
-    /// Pending-event ceiling. Producers drop events past it rather than
-    /// block the coordinator worker.
-    const EVENT_QUEUE_CAP: usize = 256;
+    #[derive(Default)]
+    struct Pending {
+        events: VecDeque<PlaybackEvent>,
+        stopped: bool,
+    }
+    #[derive(Default)]
+    struct Queue {
+        pending: Mutex<Pending>,
+        wake: Condvar,
+    }
+    static EVENT_TX: Mutex<Option<Arc<Queue>>> = Mutex::new(None);
 
-    /// Producer end, live only while a sink runs. `stop` clears it, which
-    /// disconnects the consumer once the queue drains.
-    static EVENT_TX: Mutex<Option<Sender<PlaybackEvent>>> = Mutex::new(None);
+    fn same_state(a: PlaybackEventKind, b: PlaybackEventKind) -> bool {
+        use PlaybackEventKind::*;
+        let phase = |kind| {
+            matches!(
+                kind,
+                Started | Paused | Finished | Canceled | Error | TrackLoaded
+            )
+        };
+        a == b || (phase(a) && phase(b))
+    }
+
+    impl Pending {
+        fn push(&mut self, event: PlaybackEvent) {
+            // Bound storage by state fields, not elapsed time or an arbitrary
+            // capacity. A final stop/pause always replaces stale phase updates.
+            self.events.retain(|old| !same_state(old.kind, event.kind));
+            self.events.push_back(event);
+        }
+    }
 
     /// The coordinator sink registration is process-wide and survives
     /// stop/run cycles, so it happens at most once.
@@ -152,7 +178,12 @@ mod harness {
     // Cloning is cheap relative to the OS transport round-trips that follow.
     fn on_event(ev: &PlaybackEvent) {
         if let Some(tx) = EVENT_TX.lock().as_ref() {
-            let _ = tx.try_send(ev.clone());
+            let mut pending = tx.pending.lock();
+            if !pending.stopped {
+                pending.push(ev.clone());
+            }
+            drop(pending);
+            tx.wake.notify_one();
         }
     }
 
@@ -164,7 +195,8 @@ mod harness {
         S: QueuedSink,
         F: FnOnce() -> S + Send + 'static,
     {
-        let (tx, rx) = bounded(EVENT_QUEUE_CAP);
+        let tx = Arc::new(Queue::default());
+        let rx = Arc::clone(&tx);
         {
             let mut slot = EVENT_TX.lock();
             if slot.is_some() {
@@ -187,21 +219,58 @@ mod harness {
     /// Drop the producer end. The consumer delivers whatever is already
     /// queued, tears down, and exits. No-op if not running.
     pub fn stop() {
-        drop(EVENT_TX.lock().take());
+        if let Some(queue) = EVENT_TX.lock().take() {
+            queue.pending.lock().stopped = true;
+            queue.wake.notify_one();
+        }
     }
 
-    fn consumer_thread<S: QueuedSink>(rx: Receiver<PlaybackEvent>, build: impl FnOnce() -> S) {
+    fn consumer_thread<S: QueuedSink>(rx: Arc<Queue>, build: impl FnOnce() -> S) {
         let mut sink = build();
         sink.init();
 
-        while let Ok(ev) = rx.recv() {
-            sink.deliver(&ev);
-            for ev in rx.try_iter() {
-                sink.deliver(&ev);
+        loop {
+            let (events, stopped) = {
+                let mut pending = rx.pending.lock();
+                while pending.events.is_empty() && !pending.stopped {
+                    rx.wake.wait(&mut pending);
+                }
+                (std::mem::take(&mut pending.events), pending.stopped)
+            };
+            for event in events {
+                sink.deliver(&event);
+            }
+            if stopped {
+                break;
             }
         }
 
         sink.teardown();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn slow_sink_retains_final_phase_and_latest_position() {
+            let mut pending = Pending::default();
+            for _ in 0..1000 {
+                pending.push(PlaybackEvent::new(PlaybackEventKind::Started));
+                pending.push(PlaybackEvent::new(PlaybackEventKind::PositionChanged));
+            }
+            pending.push(PlaybackEvent::new(PlaybackEventKind::Paused));
+            assert_eq!(pending.events.len(), 2);
+            assert_eq!(
+                pending.events.back().map(|e| e.kind),
+                Some(PlaybackEventKind::Paused)
+            );
+            pending.push(PlaybackEvent::new(PlaybackEventKind::Finished));
+            assert_eq!(pending.events.len(), 2);
+            assert_eq!(
+                pending.events.back().map(|e| e.kind),
+                Some(PlaybackEventKind::Finished)
+            );
+        }
     }
 }
 

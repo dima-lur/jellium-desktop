@@ -12,7 +12,7 @@
 
 use crate::event::Event;
 use crate::handle::Handle;
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, unbounded};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -29,22 +29,29 @@ impl EventLoop {
     /// `mpv_wait_event(-1)` blocks until libmpv has something to deliver.
     pub fn spawn(handle: Arc<Handle>) -> std::io::Result<(Self, Receiver<Event>)> {
         let (tx, rx) = unbounded();
+        let owner = Self::spawn_with(handle, move |event| tx.send(event).is_ok())?;
+        Ok((owner, rx))
+    }
+
+    /// Consume events inline on the drain thread. The consumer must not call
+    /// synchronous mpv APIs; use property observations or async commands.
+    pub fn spawn_with(
+        handle: Arc<Handle>,
+        consume: impl FnMut(Event) -> bool + Send + 'static,
+    ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let handle = Arc::clone(&handle);
             let stop = Arc::clone(&stop);
             thread::Builder::new()
                 .name("jfn-mpv-events".into())
-                .spawn(move || drain(handle, stop, tx))?
+                .spawn(move || drain(handle, stop, consume))?
         };
-        Ok((
-            Self {
-                handle,
-                stop,
-                thread: Some(thread),
-            },
-            rx,
-        ))
+        Ok(Self {
+            handle,
+            stop,
+            thread: Some(thread),
+        })
     }
 
     /// Signal the loop to exit and wake `mpv_wait_event` so the next
@@ -67,7 +74,7 @@ impl Drop for EventLoop {
     }
 }
 
-fn drain(handle: Arc<Handle>, stop: Arc<AtomicBool>, tx: Sender<Event>) {
+fn drain(handle: Arc<Handle>, stop: Arc<AtomicBool>, mut consume: impl FnMut(Event) -> bool) {
     loop {
         if stop.load(Ordering::Acquire) {
             return;
@@ -80,11 +87,11 @@ fn drain(handle: Arc<Handle>, stop: Arc<AtomicBool>, tx: Sender<Event>) {
             Event::LogMessage(ref m) => crate::log::forward_to_tracing(m),
             Event::Shutdown => {
                 // Forward shutdown so consumers can react, then exit.
-                let _ = tx.send(Event::Shutdown);
+                consume(Event::Shutdown);
                 return;
             }
             other => {
-                if tx.send(other).is_err() {
+                if !consume(other) {
                     return;
                 }
             }

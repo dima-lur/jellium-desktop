@@ -6,8 +6,10 @@
             this.id = 'inputPlugin';
             this.playbackManager = playbackManager;
             this.inputManager = inputManager;
-            this.positionInterval = null;
+            this.subscriptions = [];
+            this.playerSubscriptions = [];
             this.artworkAbortController = null;
+            this.artworkReader = null;
             this.pendingArtworkUrl = null;
             this.attachedPlayer = null;
 
@@ -67,114 +69,56 @@
             return null;
         }
 
+        cancelArtwork() {
+            this.artworkAbortController?.abort();
+            this.artworkReader?.abort();
+            this.artworkAbortController = null;
+            this.artworkReader = null;
+            this.pendingArtworkUrl = null;
+        }
+
         fetchAlbumArt(item) {
             if (!item || !window.jmpNative) return;
+            const baseUrl = window.ApiClient?.serverAddress?.();
+            const imageUrl = baseUrl ? this.getImageUrl(item, baseUrl) : null;
+            if (imageUrl && imageUrl === this.pendingArtworkUrl) return;
+            this.cancelArtwork();
+            if (!imageUrl) return;
 
-            if (this.artworkAbortController) {
-                this.artworkAbortController.abort();
-                this.artworkAbortController = null;
-            }
-
-            let baseUrl = '';
-            if (window.ApiClient && window.ApiClient.serverAddress) {
-                baseUrl = window.ApiClient.serverAddress();
-            }
-            if (!baseUrl) return;
-
-            const imageUrl = this.getImageUrl(item, baseUrl);
-            if (!imageUrl) {
-                console.debug('[Media] No album art URL found');
-                return;
-            }
-
-            if (imageUrl === this.pendingArtworkUrl) {
-                console.debug('[Media] Album art already pending for:', imageUrl);
-                return;
-            }
-
+            const controller = new AbortController();
+            const { signal } = controller;
             this.pendingArtworkUrl = imageUrl;
-            this.artworkAbortController = new AbortController();
-            const signal = this.artworkAbortController.signal;
-
-            console.debug('[Media] Fetching album art:', imageUrl);
-
+            this.artworkAbortController = controller;
+            const finish = () => {
+                if (this.artworkAbortController !== controller) return;
+                this.artworkAbortController = null;
+                this.artworkReader = null;
+                this.pendingArtworkUrl = null;
+            };
             fetch(imageUrl, { signal })
                 .then(response => {
                     if (!response.ok) throw new Error('Failed to fetch image');
                     return response.blob();
                 })
                 .then(blob => {
+                    if (signal.aborted) return;
                     const reader = new FileReader();
+                    this.artworkReader = reader;
                     reader.onloadend = () => {
-                        if (signal.aborted) return;
-                        const dataUri = reader.result;
-                        console.debug('[Media] Album art fetched, sending data URI');
-                        window.jmpNative.notifyArtwork(dataUri);
-                        this.pendingArtworkUrl = null;
+                        if (!signal.aborted && !reader.error) {
+                            window.jmpNative.notifyArtwork(reader.result);
+                        }
+                        reader.onloadend = null;
+                        finish();
                     };
                     reader.readAsDataURL(blob);
                 })
                 .catch(err => {
-                    if (err.name === 'AbortError') {
-                        console.debug('[Media] Album art fetch aborted');
-                    } else {
+                    if (err.name !== 'AbortError') {
                         console.warn('[Media] Album art fetch failed:', err.message);
                     }
-                    this.pendingArtworkUrl = null;
+                    finish();
                 });
-        }
-
-        startPositionUpdates() {
-            const pm = this.playbackManager;
-            const player = this.attachedPlayer;
-
-            const initialPos = pm.currentTime ? pm.currentTime() : 0;
-            if (typeof initialPos === 'number' && initialPos >= 0) {
-                window.jmpNative.notifyPosition(Math.floor(initialPos));
-            }
-
-            this.positionTracking = {
-                startTime: Date.now(),
-                startPos: initialPos,
-                rate: (player && player.getPlaybackRate) ? player.getPlaybackRate() : 1.0
-            };
-        }
-
-        resetPositionTracking() {
-            const pm = this.playbackManager;
-            const player = this.attachedPlayer;
-            const pos = pm.currentTime ? pm.currentTime() : 0;
-            this.positionTracking = {
-                startTime: Date.now(),
-                startPos: pos,
-                rate: (player && player.getPlaybackRate) ? player.getPlaybackRate() : 1.0
-            };
-        }
-
-        checkPositionDrift() {
-            if (!this.positionTracking || !this.playbackManager) return;
-            const pm = this.playbackManager;
-            const actual = pm.currentTime ? pm.currentTime() : 0;
-            if (typeof actual !== 'number' || actual < 0) return;
-
-            const elapsed = Date.now() - this.positionTracking.startTime;
-            const expected = this.positionTracking.startPos + (elapsed * this.positionTracking.rate);
-            const drift = actual - expected;
-
-            if (Math.abs(drift) > 2000) {
-                console.debug('[Media] Position drift detected: expected=' + Math.floor(expected) + ' actual=' + Math.floor(actual) + ' drift=' + Math.floor(drift));
-                if (drift > 0) {
-                    window.jmpNative.notifySeek(Math.floor(actual));
-                } else {
-                    window.jmpNative.notifyRateChange(0.0);
-                    window.jmpNative.notifyPosition(Math.floor(actual));
-                }
-                this.resetPositionTracking();
-            }
-        }
-
-        stopPositionUpdates() {
-            this.positionTracking = null;
         }
 
         updateQueueState() {
@@ -189,8 +133,8 @@
                 const currentIndex = qm?.getCurrentPlaylistIndex();
 
                 if (!playlist || !Array.isArray(playlist) || playlist.length === 0 ||
-                    currentIndex === undefined || currentIndex === null || currentIndex < 0) {
-                    console.warn('[Media] updateQueueState: queue invalid (idx=' + currentIndex + ' len=' + (playlist?.length || 0) + '), keeping last state');
+                    currentIndex === undefined || currentIndex === null || currentIndex < 0 || currentIndex >= playlist.length) {
+                    window.jmpNative.notifyQueueChange(false, false);
                     return;
                 }
 
@@ -207,166 +151,60 @@
             }
         }
 
+        listen(owner, name, callback, subscriptions = this.subscriptions) {
+            window.Events.on(owner, name, callback);
+            subscriptions.push(() => window.Events.off(owner, name, callback));
+        }
+
+        connect(signal, callback) {
+            signal.connect(callback);
+            this.subscriptions.push(() => signal.disconnect(callback));
+        }
+
         setupEvents(pm) {
-            console.debug('[Media] Setting up playbackManager events');
-            const self = this;
-
-            window.Events.on(pm, 'playbackstart', (e, player) => {
-                console.debug('[Media] playbackstart event, player:', !!player);
-
-                const state = pm.getPlayerState ? pm.getPlayerState() : null;
-
-                if (state && state.NowPlayingItem) {
-                    self.notifyMetadata(state.NowPlayingItem);
+            this.listen(pm, 'playbackstart', (_event, player) => {
+                const state = pm.getPlayerState?.();
+                if (state?.NowPlayingItem) this.notifyMetadata(state.NowPlayingItem);
+                if (player !== this.attachedPlayer) {
+                    this.playerSubscriptions.splice(0).forEach(dispose => dispose());
+                    this.attachedPlayer = player;
+                    if (player) this.listen(player, 'playing', () => this.updateQueueState(), this.playerSubscriptions);
                 }
-
-                console.debug('[Media] Sending Playing state from playbackstart');
-                if (window.jmpNative) window.jmpNative.notifyPlaybackState('Playing');
-                self.startPositionUpdates();
-                self.updateQueueState();
-
-                if (player && player !== self.attachedPlayer) {
-                    if (self.attachedPlayer) {
-                        window.Events.off(self.attachedPlayer, 'playing');
-                        window.Events.off(self.attachedPlayer, 'pause');
-                        window.Events.off(self.attachedPlayer, 'ratechange');
-                        window.Events.off(self.attachedPlayer, 'timeupdate');
-                    }
-                    self.attachedPlayer = player;
-
-                    window.Events.on(player, 'playing', () => {
-                        console.debug('[Media] player.playing event');
-                        if (window.jmpNative) window.jmpNative.notifyPlaybackState('Playing');
-                        self.updateQueueState();
-
-                        const pos = pm.currentTime ? pm.currentTime() : 0;
-                        if (pos !== undefined && pos !== null) {
-                            window.jmpNative.notifyPosition(Math.floor(pos));
-                        }
-                        self.resetPositionTracking();
-
-                        const rate = player.getPlaybackRate ? player.getPlaybackRate() : 1.0;
-                        window.jmpNative.notifyRateChange(rate);
-                    });
-
-                    window.Events.on(player, 'pause', () => {
-                        console.debug('[Media] player.pause event');
-                        if (window.jmpNative) {
-                            window.jmpNative.notifyPlaybackState('Paused');
-                            const pos = pm.currentTime ? pm.currentTime() : 0;
-                            if (typeof pos === 'number' && pos >= 0) {
-                                window.jmpNative.notifyPosition(Math.floor(pos));
-                            }
-                        }
-                    });
-
-                    window.Events.on(player, 'ratechange', () => {
-                        const rate = player.getPlaybackRate ? player.getPlaybackRate() : 1.0;
-                        console.debug('[Media] player.ratechange event, rate:', rate);
-                        if (window.jmpNative) {
-                            window.jmpNative.notifyRateChange(rate);
-                            const pos = pm.currentTime ? pm.currentTime() : 0;
-                            if (typeof pos === 'number' && pos >= 0) {
-                                window.jmpNative.notifyPosition(Math.floor(pos));
-                            }
-                        }
-                        self.resetPositionTracking();
-                    });
-
-                    window.Events.on(player, 'timeupdate', () => {
-                        self.checkPositionDrift();
-                    });
-                }
+                this.updateQueueState();
             });
-
-            window.Events.on(pm, 'playbackstop', (e, stopInfo) => {
-                try {
-                    console.debug('[Media] playbackstop event, stopInfo:', JSON.stringify(stopInfo));
-                } catch (err) {
-                    console.debug('[Media] playbackstop event, stopInfo: [unserializable]');
-                }
-                self.stopPositionUpdates();
-
-                const isNavigating = !!(stopInfo && stopInfo.nextMediaType);
-                if (!isNavigating) {
-                    console.debug('[Media] Playback truly stopped, clearing state');
-                    if (window.jmpNative) window.jmpNative.notifyPlaybackState('Stopped');
-                } else {
-                    console.debug('[Media] Navigating to next item, keeping metadata');
-                }
-                self.updateQueueState();
+            this.listen(pm, 'playbackstop', () => {
+                this.playerSubscriptions.splice(0).forEach(dispose => dispose());
+                this.attachedPlayer = null;
+                this.cancelArtwork();
+                window.jmpNative?.notifyQueueChange(false, false);
             });
-
-            window.Events.on(pm, 'playlistitemremove', () => self.updateQueueState());
-            window.Events.on(pm, 'playlistitemadd', () => self.updateQueueState());
-            window.Events.on(pm, 'playlistitemchange', () => self.updateQueueState());
-
-            const remap = {
-                'play_pause': 'playpause',
-                'play': 'play',
-                'pause': 'pause',
-                'stop': 'stop',
-                'next': 'next',
-                'previous': 'previous',
-                'seek_forward': 'fastforward',
-                'seek_backward': 'rewind'
-            };
-
-            window.api.input.hostInput.connect((actions) => {
-                console.debug('[Media] hostInput received:', actions);
-                actions.forEach(action => {
-                    const mappedAction = remap[action] || action;
-                    console.debug('[Media] Sending to inputManager:', mappedAction);
-                    if (self.inputManager && typeof self.inputManager.handleCommand === 'function') {
-                        self.inputManager.handleCommand(mappedAction, {});
-                    } else {
-                        console.warn('[Media] inputManager.handleCommand not available, inputManager:', !!self.inputManager);
-                    }
-                });
+            for (const name of ['playlistitemremove', 'playlistitemadd', 'playlistitemchange']) {
+                this.listen(pm, name, () => this.updateQueueState());
+            }
+            const remap = { play_pause: 'playpause', seek_forward: 'fastforward', seek_backward: 'rewind' };
+            this.connect(window.api.input.hostInput, actions => {
+                for (const action of actions) this.inputManager?.handleCommand?.(remap[action] || action, {});
             });
-
-            window.api.input.positionSeek.connect((positionMs) => {
-                console.debug('[Media] positionSeek received:', positionMs);
-                const currentPlayer = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
-                if (currentPlayer) {
-                    const duration = pm.duration ? pm.duration() : 0;
-                    if (duration > 0) {
-                        const percent = (positionMs * 10000) / duration * 100;
-                        console.debug('[Media] Seeking to', percent.toFixed(2), '% (', positionMs, 'ms of', duration, 'ticks)');
-                        pm.seekPercent(percent, currentPlayer);
-                    }
-                }
+            this.connect(window.api.input.positionSeek, positionMs => {
+                const player = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
+                const duration = pm.duration?.() || 0;
+                if (player && duration > 0) pm.seekPercent(positionMs * 10000 / duration * 100, player);
             });
-
-            window.api.input.rateChanged.connect((rate) => {
-                console.debug('[Media] rateChanged received:', rate);
-                const currentPlayer = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
-                if (currentPlayer && typeof currentPlayer.setPlaybackRate === 'function') {
-                    currentPlayer.setPlaybackRate(rate);
-                }
+            this.connect(window.api.input.rateChanged, rate => {
+                const player = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
+                player?.applyPlaybackRate?.(rate);
             });
-
-            console.debug('[Media] Events setup complete');
         }
 
         destroy() {
-            this.stopPositionUpdates();
-            if (this.artworkAbortController) {
-                this.artworkAbortController.abort();
-                this.artworkAbortController = null;
-            }
-            if (this.attachedPlayer && window.Events) {
-                window.Events.off(this.attachedPlayer, 'playing');
-                window.Events.off(this.attachedPlayer, 'pause');
-                window.Events.off(this.attachedPlayer, 'ratechange');
-                window.Events.off(this.attachedPlayer, 'timeupdate');
-                this.attachedPlayer = null;
-            }
-            if (this.playbackManager && window.Events) {
-                window.Events.off(this.playbackManager, 'playbackstart');
-                window.Events.off(this.playbackManager, 'playbackstop');
-            }
+            this.playerSubscriptions.splice(0).forEach(dispose => dispose());
+            this.subscriptions.splice(0).forEach(dispose => dispose());
+            this.cancelArtwork();
+            this.attachedPlayer = null;
+            this.playbackManager = null;
+            this.inputManager = null;
         }
+
     }
 
     window._inputPlugin = inputPlugin;

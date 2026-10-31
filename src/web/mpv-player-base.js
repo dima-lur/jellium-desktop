@@ -143,14 +143,13 @@
 
         // Playback control
         pause() { window.api.player.pause(); }
-        resume() { this._paused = false; window.api.player.play(); }
+        resume() { window.api.player.play(); }
         unpause() { window.api.player.play(); }
         paused() { return this._paused; }
 
         // Time
         currentTime(val) {
             if (val != null) {
-                this._currentTime = val;
                 window.api.player.seekTo(val);
                 return;
             }
@@ -167,8 +166,13 @@
 
         // Playback rate
         setPlaybackRate(value) {
-            this._playRate = value;
             window.api.player.setPlaybackRate(value * 1000);
+        }
+
+        applyPlaybackRate(value) {
+            if (this._playRate === value) return;
+            this._playRate = value;
+            this.events.trigger(this, 'ratechange');
         }
 
         getPlaybackRate() { return this._playRate || 1; }

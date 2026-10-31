@@ -353,9 +353,9 @@ fn handle_message(message: BrowserMessage) -> bool {
             // mpv is the authoritative source via coordinator; ignore JS hint.
             true
         }
-        "notifySeek" => with_args(args, |a| {
-            pb_post(PbInput::Seeked(list_int(a, 0) as i64 * 1000));
-        }),
+        // Legacy web clients may still send hints. Only mpv observations may
+        // publish playback position, rate, or seek completion.
+        "notifySeek" | "notifyPosition" | "notifyRateChange" => true,
         "appExit" => {
             jfn_shutdown_initiate();
             true

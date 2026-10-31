@@ -1,10 +1,8 @@
 //! The CEF ABI boundary for accelerated-paint frames.
 //!
-//! CEF releases the resources backing a frame to its internal pool when the
-//! paint callback returns, so anything that outlives the callback — X11 and
-//! Wayland both hand the frame to an actor thread — must be acquired before
-//! then. This module is the one place that acquisition happens; downstream the
-//! frame is an owned [`SharedTexture`] and everything is safe code.
+//! CEF recycles its frame storage when the callback returns. Each platform
+//! imports the borrowed resource, copies its pixels to application-owned GPU
+//! storage, and waits for that copy before the frame can cross a thread boundary.
 
 use cef::AcceleratedPaintInfo;
 
@@ -49,7 +47,7 @@ pub(crate) fn acquire(info: &AcceleratedPaintInfo) -> Option<SharedTexture> {
             stride: p.stride,
         });
     }
-    Some(SharedTexture::new(
+    SharedTexture::new(
         coded,
         FrameSize {
             w: info.extra.visible_rect.width.max(0),
@@ -58,37 +56,28 @@ pub(crate) fn acquire(info: &AcceleratedPaintInfo) -> Option<SharedTexture> {
         format,
         info.modifier,
         planes,
-    ))
+    )
+    .capture()
 }
 
-/// The compositor opens the shared handle inline, within this callback, so
-/// there is nothing to acquire.
+/// Capture the borrowed NT handle while it is valid inside this callback.
 #[cfg(windows)]
 pub(crate) fn acquire(info: &AcceleratedPaintInfo) -> Option<SharedTexture> {
     if info.shared_texture_handle.is_null() {
         return None;
     }
     let (coded, visible_rect) = extents(info)?;
-    Some(SharedTexture::new(
-        info.shared_texture_handle,
-        coded,
-        visible_rect,
-    ))
+    SharedTexture::new(info.shared_texture_handle, coded, visible_rect).capture()
 }
 
-/// The compositor wraps the `IOSurface` in an `MTLTexture` inline, within this
-/// callback, so there is nothing to acquire.
+/// Capture the borrowed IOSurface while it is valid inside this callback.
 #[cfg(target_os = "macos")]
 pub(crate) fn acquire(info: &AcceleratedPaintInfo) -> Option<SharedTexture> {
     if info.shared_texture_io_surface.is_null() {
         return None;
     }
     let (coded, visible_rect) = extents(info)?;
-    Some(SharedTexture::new(
-        info.shared_texture_io_surface,
-        coded,
-        visible_rect,
-    ))
+    SharedTexture::new(info.shared_texture_io_surface, coded, visible_rect).capture()
 }
 
 /// The pair CEF states about every frame, on the platforms whose payload does

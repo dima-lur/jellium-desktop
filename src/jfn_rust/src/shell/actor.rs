@@ -4,8 +4,9 @@
 //! `IDCompositionVisual` / `wl_surface` behind it. Everything else in the
 //! process talks to the overlay by posting [`Work`].
 
+use super::work_queue::{WorkReceiver, WorkSender, work_channel};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -131,8 +132,8 @@ impl Deadline {
 /// The actor's channel, built before its thread exists. Work posted into it
 /// waits in the queue the thread takes at spawn rather than being dropped.
 pub struct Channel {
-    tx: Sender<Work>,
-    rx: parking_lot::Mutex<Option<Receiver<Work>>>,
+    tx: WorkSender,
+    rx: parking_lot::Mutex<Option<WorkReceiver>>,
 }
 
 impl Default for Channel {
@@ -143,7 +144,7 @@ impl Default for Channel {
 
 impl Channel {
     pub fn new() -> Channel {
-        let (tx, rx) = channel();
+        let (tx, rx) = work_channel();
         Channel {
             tx,
             rx: parking_lot::Mutex::new(Some(rx)),
@@ -154,17 +155,17 @@ impl Channel {
         drop(self.tx.send(work));
     }
 
-    fn sender(&self) -> Sender<Work> {
+    fn sender(&self) -> WorkSender {
         self.tx.clone()
     }
 
-    fn take_receiver(&self) -> Option<Receiver<Work>> {
+    fn take_receiver(&self) -> Option<WorkReceiver> {
         self.rx.lock().take()
     }
 }
 
 pub struct Actor {
-    tx: Sender<Work>,
+    tx: WorkSender,
     thread: JoinHandle<()>,
 }
 
@@ -513,7 +514,7 @@ struct Updated {
 struct Loop {
     actions: crate::shell::ApplicationActions,
     surface: SurfaceHandle,
-    wake_tx: Sender<Work>,
+    wake_tx: WorkSender,
     painter: Painter,
     model: Model,
     cache: user_interface::Cache,
@@ -541,8 +542,8 @@ struct Loop {
 
 fn run(
     surface: SurfaceHandle,
-    rx: &Receiver<Work>,
-    wake_tx: &Sender<Work>,
+    rx: &WorkReceiver,
+    wake_tx: &WorkSender,
     metadata: crate::shell::metadata::ApplicationMetadata,
     actions: crate::shell::ApplicationActions,
     on_ready: std::sync::mpsc::SyncSender<Result<(), LoopStartError>>,
@@ -583,7 +584,7 @@ impl Loop {
     /// Brings the swapchain up at the window's current extent.
     fn start(
         surface: SurfaceHandle,
-        wake_tx: &Sender<Work>,
+        wake_tx: &WorkSender,
         target: jfn_gpu_paint::WindowTarget,
         metadata: crate::shell::metadata::ApplicationMetadata,
         actions: crate::shell::ApplicationActions,
@@ -642,7 +643,7 @@ impl Loop {
         })
     }
 
-    fn run(mut self, rx: &Receiver<Work>) {
+    fn run(mut self, rx: &WorkReceiver) {
         loop {
             if !self.immediate && self.wait(rx) == Flow::Stop {
                 break;
@@ -662,7 +663,7 @@ impl Loop {
     /// Blocks until work arrives or the nearest deadline is due. A deadline
     /// already in the past yields one immediate pass rather than a
     /// zero-length wait the loop would spin on.
-    fn wait(&mut self, rx: &Receiver<Work>) -> Flow {
+    fn wait(&mut self, rx: &WorkReceiver) -> Flow {
         let deadline = self.pending.merge(self.model.deadline());
         let now = Instant::now();
         if deadline.elapsed(now) {
@@ -685,14 +686,9 @@ impl Loop {
 
     /// Takes the whole queue, so a pointer stream faster than the refresh
     /// rate collapses into one pass instead of backing up.
-    fn drain(&mut self, rx: &Receiver<Work>) -> Flow {
-        loop {
-            match rx.try_recv() {
-                Ok(work) => self.batch.push(work),
-                Err(TryRecvError::Empty) => return Flow::Continue,
-                Err(TryRecvError::Disconnected) => return Flow::Stop,
-            }
-        }
+    fn drain(&mut self, rx: &WorkReceiver) -> Flow {
+        self.batch.extend(rx.take());
+        Flow::Continue
     }
 
     fn absorb_batch(&mut self) -> Flow {
@@ -909,7 +905,7 @@ fn resolve_deferred(
     model: &Model,
     deferred: &mut Vec<Deferred>,
     queued: &mut Vec<Apply>,
-    wake_tx: &Sender<Work>,
+    wake_tx: &WorkSender,
     actions: crate::shell::ApplicationActions,
 ) {
     let fields = Fields::collect(ui, painter.renderer());
@@ -980,7 +976,7 @@ fn update_ui(
     events: &mut Vec<Event>,
     cursor: Cursor,
     waker: &shell::Waker,
-    wake_tx: &Sender<Work>,
+    wake_tx: &WorkSender,
 ) -> Updated {
     events.push(Event::Window(
         window::Event::RedrawRequested(Instant::now()),
@@ -1050,7 +1046,7 @@ enum Painted {
 
 /// The shell overlay's own producer: a deferred acquire with no retry deadline
 /// asks it for the wake that re-runs the pass.
-struct Redraw(Sender<Work>);
+struct Redraw(WorkSender);
 
 impl FrameSource for Redraw {
     fn request_frame(&self) {
@@ -1144,7 +1140,7 @@ fn queue_edit(
     target: &Target,
     command: jfn_input::EditCommand,
     queued: &mut Vec<Apply>,
-    tx: &Sender<Work>,
+    tx: &WorkSender,
 ) {
     use jfn_input::EditCommand as E;
     let field = match target {
@@ -1171,7 +1167,7 @@ fn queue_edit(
 
 /// Requests the OS clipboard's text; the reply arrives as
 /// [`Work::SelectionText`].
-fn read_clipboard(tx: Sender<Work>, reader: Reader) {
+fn read_clipboard(tx: WorkSender, reader: Reader) {
     let Some(lease) = jfn_platform_abi::try_lease() else {
         return;
     };
@@ -1187,7 +1183,7 @@ fn read_clipboard(tx: Sender<Work>, reader: Reader) {
 
 /// Requests the primary selection's text, replying `None` on a backend that
 /// serves none.
-fn read_primary(tx: Sender<Work>, reader: Reader) {
+fn read_primary(tx: WorkSender, reader: Reader) {
     let Some(lease) = jfn_platform_abi::try_lease() else {
         return;
     };
@@ -1301,8 +1297,8 @@ fn apply_visibility(surface: SurfaceHandle, model: &Model) -> Visibility {
 
 fn wait_for_target(
     surface: SurfaceHandle,
-    rx: &Receiver<Work>,
-    wake_tx: &Sender<Work>,
+    rx: &WorkReceiver,
+    wake_tx: &WorkSender,
     pending: &mut Vec<Work>,
 ) -> Option<jfn_gpu_paint::WindowTarget> {
     let lease = jfn_platform_abi::try_lease()?;
@@ -1320,7 +1316,7 @@ fn wait_for_target(
 }
 
 fn await_target<T>(
-    rx: &Receiver<Work>,
+    rx: &WorkReceiver,
     pending: &mut Vec<Work>,
     deadline: Instant,
     mut query: impl FnMut() -> Option<T>,
@@ -1395,7 +1391,7 @@ mod tests {
 
     #[test]
     fn target_wait_preserves_work_and_observes_readiness() {
-        let (tx, rx) = super::channel();
+        let (tx, rx) = super::work_channel();
         tx.send(super::Work::OpenAbout).unwrap();
         let mut pending = Vec::new();
         let mut queries = 0;
@@ -1414,7 +1410,7 @@ mod tests {
 
     #[test]
     fn target_wait_stops_on_shutdown_or_deadline() {
-        let (tx, rx) = super::channel();
+        let (tx, rx) = super::work_channel();
         tx.send(super::Work::Shutdown).unwrap();
         let mut pending = Vec::new();
         assert_eq!(

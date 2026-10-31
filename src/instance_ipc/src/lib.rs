@@ -9,7 +9,7 @@ use interprocess::local_socket::{GenericFilePath, ListenerOptions, Name as Socke
 use jfn_platform_abi::Instance;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 #[cfg(windows)]
@@ -41,9 +41,15 @@ impl Name {
 
 pub struct Stream {
     inner: BufReader<SocketStream>,
+    max_frame_bytes: Option<usize>,
 }
 
 impl Stream {
+    pub fn with_frame_limit(mut self, max_frame_bytes: usize) -> Self {
+        self.max_frame_bytes = Some(max_frame_bytes);
+        self
+    }
+
     pub async fn connect(instance: &Instance) -> io::Result<Self> {
         let name = Name::for_instance(instance)?;
         let stream = SocketStream::connect(name.to_socket()?).await?;
@@ -53,6 +59,7 @@ impl Stream {
     fn wrap(stream: SocketStream) -> Self {
         Self {
             inner: BufReader::new(stream),
+            max_frame_bytes: None,
         }
     }
 
@@ -67,7 +74,22 @@ impl Stream {
 
     pub async fn recv<M: DeserializeOwned>(&mut self) -> io::Result<Option<M>> {
         let mut line = String::new();
-        if self.inner.read_line(&mut line).await? == 0 {
+        let count = if let Some(limit) = self.max_frame_bytes {
+            let count = (&mut self.inner)
+                .take((limit as u64).saturating_add(1))
+                .read_line(&mut line)
+                .await?;
+            if count > limit {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "IPC frame too large",
+                ));
+            }
+            count
+        } else {
+            self.inner.read_line(&mut line).await?
+        };
+        if count == 0 {
             return Ok(None);
         }
         serde_json::from_str(line.trim_end())
@@ -94,26 +116,42 @@ impl Listener {
         Req: DeserializeOwned + Debug + Send + 'static,
         Resp: Serialize + Send + Sync + 'static,
     {
+        Self::try_start_with_limit(instance, handle, None).await
+    }
+
+    pub async fn try_start_with_limit<Req, Resp>(
+        instance: &Instance,
+        handle: fn(&Req) -> Resp,
+        max_frame_bytes: Option<usize>,
+    ) -> Start
+    where
+        Req: DeserializeOwned + Debug + Send + 'static,
+        Resp: Serialize + Send + Sync + 'static,
+    {
         match Name::for_instance(instance) {
-            Ok(name) => Self::create(&name, handle).await,
+            Ok(name) => Self::create(&name, handle, max_frame_bytes).await,
             Err(e) => Start::Failed(e),
         }
     }
 
-    async fn create<Req, Resp>(name: &Name, handle: fn(&Req) -> Resp) -> Start
+    async fn create<Req, Resp>(
+        name: &Name,
+        handle: fn(&Req) -> Resp,
+        max_frame_bytes: Option<usize>,
+    ) -> Start
     where
         Req: DeserializeOwned + Debug + Send + 'static,
         Resp: Serialize + Send + Sync + 'static,
     {
         match Self::make(name, false) {
-            Ok(listener) => Self::spawn(listener, handle),
+            Ok(listener) => Self::spawn(listener, handle, max_frame_bytes),
             Err(held) if name_held(&held) => match Self::probe(name).await {
                 Probe::AlreadyRunning => Start::AlreadyRunning,
                 // Windows ignores `try_overwrite`, so this re-bind is the
                 // second opinion that turns a genuine denial back into the
                 // denial itself.
                 Probe::Vacant => match Self::make(name, true) {
-                    Ok(listener) => Self::spawn(listener, handle),
+                    Ok(listener) => Self::spawn(listener, handle, max_frame_bytes),
                     Err(e) => Start::Failed(e),
                 },
                 Probe::Failed(e) => Start::Failed(e),
@@ -142,13 +180,22 @@ impl Listener {
         }
     }
 
-    fn spawn<Req, Resp>(listener: SocketListener, handle: fn(&Req) -> Resp) -> Start
+    fn spawn<Req, Resp>(
+        listener: SocketListener,
+        handle: fn(&Req) -> Resp,
+        max_frame_bytes: Option<usize>,
+    ) -> Start
     where
         Req: DeserializeOwned + Debug + Send + 'static,
         Resp: Serialize + Send + Sync + 'static,
     {
         let shutdown = Arc::new(Notify::new());
-        let accept = tokio::spawn(accept_loop(listener, handle, shutdown.clone()));
+        let accept = tokio::spawn(accept_loop(
+            listener,
+            handle,
+            shutdown.clone(),
+            max_frame_bytes,
+        ));
         Start::Started(Listener {
             shutdown,
             accept: Some(accept),
@@ -220,14 +267,20 @@ async fn accept_loop<Req, Resp>(
     listener: SocketListener,
     handle: fn(&Req) -> Resp,
     shutdown: Arc<Notify>,
+    max_frame_bytes: Option<usize>,
 ) where
     Req: DeserializeOwned + Debug + Send + 'static,
     Resp: Serialize + Send + Sync + 'static,
 {
+    let capacity = std::thread::available_parallelism()
+        .unwrap_or(std::num::NonZeroUsize::MIN)
+        .get();
+    let mut clients = tokio::task::JoinSet::new();
     loop {
         let conn = tokio::select! {
+            _ = clients.join_next(), if !clients.is_empty() => continue,
             () = shutdown.notified() => break,
-            accepted = listener.accept() => match accepted {
+            accepted = listener.accept(), if clients.len() < capacity => match accepted {
                 Ok(conn) => conn,
                 Err(e) => {
                     tracing::warn!("accept: {e}");
@@ -235,7 +288,9 @@ async fn accept_loop<Req, Resp>(
                 }
             },
         };
-        tokio::spawn(serve(Stream::wrap(conn), handle, shutdown.clone()));
+        let mut stream = Stream::wrap(conn);
+        stream.max_frame_bytes = max_frame_bytes;
+        clients.spawn(serve(stream, handle, shutdown.clone()));
     }
 }
 
@@ -253,7 +308,11 @@ where
             Ok(Some(req)) => {
                 tracing::debug!("received {req:?}");
                 let resp = handle(&req);
-                if let Err(e) = stream.send(&resp).await {
+                let sent = tokio::select! {
+                    () = shutdown.notified() => break,
+                    sent = stream.send(&resp) => sent,
+                };
+                if let Err(e) = sent {
                     tracing::warn!("send response: {e}");
                     break;
                 }

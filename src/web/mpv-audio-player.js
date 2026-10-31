@@ -44,7 +44,6 @@
                     const volume = this.getSavedVolume() * 100;
                     this.setVolume(volume, volume !== this._volume);
                 }
-                this.setPlaybackRate(this.getPlaybackRate());
                 this._emitPlaying();
             };
 

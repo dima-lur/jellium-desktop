@@ -3,9 +3,8 @@
 use jfn_gpu_paint::Surfaces;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+    DCompositionCreateDevice3, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
 };
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 
 /// The DComp device, the HWND composition target, and the root visual every
 /// surface parents into.
@@ -20,7 +19,10 @@ pub(crate) struct Devices {
 impl Devices {
     pub(crate) fn create(hwnd: HWND) -> windows_core::Result<Devices> {
         unsafe {
-            let device: IDCompositionDevice = DCompositionCreateDevice(None::<&IDXGIDevice>)?;
+            // Layer visibility uses IDCompositionVisual3::SetVisible, so the
+            // visuals must come from a V3 device even through the V1 interface.
+            let device: IDCompositionDevice =
+                DCompositionCreateDevice3(None::<&windows_core::IUnknown>)?;
             let target = device.CreateTargetForHwnd(hwnd, false)?;
             let root = device.CreateVisual()?;
             target.SetRoot(&root)?;
@@ -55,11 +57,16 @@ impl Devices {
 
     /// Commits and blocks until the composition engine has processed it, so
     /// the change is on screen before the caller returns.
-    pub(crate) fn commit_and_wait(&self) {
-        self.commit();
+    pub(crate) fn commit_and_wait(&self) -> bool {
+        if let Err(e) = unsafe { self.device.Commit() } {
+            tracing::error!(target: "platform", "DirectComposition Commit failed: {e:?}");
+            return false;
+        }
         if let Err(e) = unsafe { self.device.WaitForCommitCompletion() } {
             tracing::error!(target: "platform", "DirectComposition WaitForCommitCompletion failed: {e:?}");
+            return false;
         }
+        true
     }
 }
 

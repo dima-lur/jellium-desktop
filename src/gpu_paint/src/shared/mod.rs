@@ -21,7 +21,31 @@ mod backend;
 pub use backend::ProducerId;
 #[cfg(windows)]
 pub(crate) use backend::adapter_luid;
-pub(crate) use backend::{Importer, acquire_barrier, adapter_matches, open_device};
+pub(crate) use backend::{acquire_barrier, adapter_matches, open_device};
+
+pub(crate) struct Importer;
+
+impl Importer {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    pub(crate) fn import(
+        &mut self,
+        device: &wgpu::Device,
+        frame: &crate::SharedTexture,
+    ) -> Result<Imported, ImportFailed> {
+        if let Some(texture) = &frame.owned {
+            return Ok(Imported {
+                texture: texture.clone(),
+                acquire: None,
+                reused: false,
+            });
+        }
+        // CEF resources must never be cached between callbacks, including IOSurfaces.
+        backend::Importer::new().import(device, frame)
+    }
+}
 
 /// A shared-texture import that did not work.
 ///

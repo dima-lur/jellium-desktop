@@ -22,6 +22,7 @@
 
 #![deny(clippy::let_underscore_must_use)]
 
+mod capture;
 mod context;
 mod error;
 mod painter;
@@ -31,7 +32,7 @@ mod shared_texture;
 mod swapchain;
 mod types;
 
-pub use context::{FORMAT, Surfaces, any_adapter, surfaces};
+pub use context::{FORMAT, Surfaces, any_adapter, device_lost, on_device_lost, surfaces};
 pub use error::SurfaceLost;
 pub use painter::{PresentFailed, Surface};
 pub use refresh::{

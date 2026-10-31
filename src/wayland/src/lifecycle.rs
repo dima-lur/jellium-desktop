@@ -111,8 +111,15 @@ pub(crate) fn init(
             resolved = Req::Gpu;
         }
         Req::Dmabuf => {
-            if dmabuf_available(display) {
-                tracing::info!("paint: EGL/GBM dmabuf shared texture");
+            if dmabuf_available(display)
+                && let Some(gpu) =
+                    jfn_gpu_paint::Surfaces::init(None).filter(|gpu| gpu.can_import_shared())
+            {
+                // CEF's pool can recycle pixels after the callback. Only owned
+                // GPU snapshots may cross to the layer actor, never wl_buffers
+                // referring directly to a borrowed CEF allocation.
+                core.install_gpu_paint(gpu);
+                tracing::info!("paint: owned GPU snapshots of CEF dmabufs");
                 resolved = Req::Dmabuf;
             } else {
                 tracing::info!("paint: EGL dmabuf unavailable; trying gpu");

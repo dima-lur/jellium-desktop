@@ -46,6 +46,11 @@ test: build
 test: build
     . 'dev/windows/env.ps1'; cargo test --manifest-path src/Cargo.toml --workspace
 
+# JavaScript bridge regression tests (requires Node.js)
+[group('test')]
+test-web:
+    node --test src/web/tests/bridge.test.cjs
+
 # Format workspace
 [group('lint')]
 fmt:

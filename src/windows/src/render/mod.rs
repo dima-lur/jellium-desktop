@@ -63,6 +63,30 @@ struct Entry {
     id: SurfaceId,
     content: Layer,
     popup: Layer,
+    popup_visibility: PopupVisibility,
+    visibility: Option<Visibility>,
+}
+
+#[derive(Default)]
+struct PopupVisibility {
+    requested: bool,
+    painted: bool,
+}
+
+impl PopupVisibility {
+    fn show(&mut self) -> bool {
+        self.requested = true;
+        self.painted
+    }
+
+    fn presented(&mut self) -> bool {
+        self.painted = true;
+        self.requested
+    }
+
+    fn hide(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Entry {
@@ -75,10 +99,14 @@ impl Entry {
                 .root()
                 .AddVisual(&content, true, None::<&IDCompositionVisual>)?;
         }
+        let popup = Layer::new(popup);
+        popup.set_visible(false);
         Ok(Entry {
             id,
             content: Layer::new(content),
-            popup: Layer::new(popup),
+            popup,
+            popup_visibility: PopupVisibility::default(),
+            visibility: None,
         })
     }
 
@@ -125,10 +153,8 @@ impl Registry {
         }
     }
 
-    fn commit_and_wait(&self) {
-        if let Some(devices) = self.devices.as_ref() {
-            devices.commit_and_wait();
-        }
+    fn commit_and_wait(&self) -> bool {
+        self.devices.as_ref().is_some_and(Devices::commit_and_wait)
     }
 }
 
@@ -269,17 +295,31 @@ pub(crate) fn apply_stack(ordered: &[SurfaceHandle]) {
 pub(crate) fn set_visibility(h: SurfaceHandle, visibility: Visibility) -> VisibilityCommit {
     let mut st = STATE.lock();
     if let Some(entry) = st.find_mut(h) {
-        entry.content.set_visible(visibility.is_shown());
+        if entry.visibility == Some(visibility) {
+            return VisibilityCommit::issued(visibility, Ack::immediate());
+        }
+        if !entry.content.set_visible(visibility.is_shown()) {
+            return VisibilityCommit::issued(
+                entry.visibility.unwrap_or(Visibility::Hidden),
+                Ack::immediate(),
+            );
+        }
     }
-    st.commit_and_wait();
-    VisibilityCommit::issued(visibility, Ack::immediate())
+    let committed = st.commit_and_wait();
+    let acknowledged = st.find_mut(h).map_or(Visibility::Hidden, |entry| {
+        if committed {
+            entry.visibility = Some(visibility);
+        }
+        entry.visibility.unwrap_or(Visibility::Hidden)
+    });
+    VisibilityCommit::issued(acknowledged, Ack::immediate())
 }
 
 /// The extent a frame's content asks the swapchain for, or `None` when the
 /// content carries nothing presentable.
 fn frame_extent(content: &Content<'_>) -> Option<FrameSize> {
     match content {
-        Content::Accelerated(tex) => (!tex.handle().is_null()).then(|| tex.coded()),
+        Content::Accelerated(tex) => tex.is_owned().then(|| tex.coded()),
         Content::Software { size, pixels, .. } => (!pixels.is_empty() && size.w > 0 && size.h > 0)
             .then_some(FrameSize {
                 w: size.w,
@@ -320,7 +360,12 @@ pub(crate) fn present<'a>(
                 dirty,
             }),
         };
-        (presented, layer.take_needs_commit())
+        let mut needs_commit = layer.take_needs_commit();
+        if part == Part::Popup && presented {
+            entry.popup.set_visible(entry.popup_visibility.presented());
+            needs_commit = true;
+        }
+        (presented, needs_commit)
     };
     if needs_commit {
         st.commit();
@@ -365,16 +410,47 @@ pub(crate) fn popup_show(h: SurfaceHandle, x: c_int, y: c_int) {
         return;
     };
     entry.popup.set_offset(px as f32, py as f32);
+    entry.popup.set_visible(entry.popup_visibility.show());
     st.commit();
 }
 
-/// Detach the popup visual's content, so reopening it cannot flash the frame
-/// it was closed with.
+/// Hide without detaching the swapchain: wgpu only binds it when first created,
+/// not when reconfigured. A new popup stays hidden until its first fresh frame.
 pub(crate) fn popup_hide(h: SurfaceHandle) {
     let mut st = STATE.lock();
     let Some(entry) = st.find_mut(h) else {
         return;
     };
-    entry.popup.detach();
+    entry.popup_visibility.hide();
+    entry.popup.set_visible(false);
     st.commit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PopupVisibility;
+
+    #[test]
+    fn popup_waits_for_its_first_frame() {
+        let mut popup = PopupVisibility::default();
+        assert!(!popup.show());
+        assert!(popup.presented());
+    }
+
+    #[test]
+    fn popup_can_receive_pixels_before_its_position() {
+        let mut popup = PopupVisibility::default();
+        assert!(!popup.presented());
+        assert!(popup.show());
+    }
+
+    #[test]
+    fn reopening_does_not_reveal_the_previous_frame() {
+        let mut popup = PopupVisibility::default();
+        assert!(!popup.show());
+        assert!(popup.presented());
+        popup.hide();
+        assert!(!popup.show());
+        assert!(popup.presented());
+    }
 }

@@ -48,32 +48,23 @@ impl Layer {
         }
     }
 
-    /// Sever the visual's content and mark the painter for a rebind: wgpu
-    /// binds the swapchain to the visual inside `configure` and nowhere else,
-    /// so an owner-side `SetContent(None)` leaves a painter whose extent never
-    /// moved and whose content is unbound.
-    pub(crate) fn detach(&mut self) {
-        self.clear_content();
-        if let Some(painter) = self.painter.as_mut() {
-            painter.content_detached();
-        }
-    }
-
     /// Sets the visual's visibility through `IDCompositionVisual3::SetVisible`.
     /// The swapchain's binding to the visual is untouched, so a layer shown
     /// again presents into the visual it was already bound to, and an
     /// externally presented layer keeps its content across a hide.
-    pub(crate) fn set_visible(&self, visible: bool) {
+    pub(crate) fn set_visible(&self, visible: bool) -> bool {
         let visual3: IDCompositionVisual3 = match self.visual.cast() {
             Ok(visual3) => visual3,
             Err(e) => {
                 tracing::error!(target: "platform", "IDCompositionVisual3 unavailable: {e:?}");
-                return;
+                return false;
             }
         };
         if let Err(e) = unsafe { visual3.SetVisible(visible) } {
             tracing::error!(target: "platform", "SetVisible failed: {e:?}");
+            return false;
         }
+        true
     }
 
     fn clear_content(&self) {

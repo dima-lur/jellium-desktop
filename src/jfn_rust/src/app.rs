@@ -915,6 +915,7 @@ pub fn jfn_app_main() -> c_int {
     let _ = crate::window_geometry::controller();
 
     crate::manager::prepare_shutdown();
+    jfn_gpu_paint::on_device_lost(jfn_playback::jfn_shutdown_initiate);
     plat().install_shutdown_handler(jfn_playback::jfn_shutdown_initiate);
 
     let instance = match Instance::for_config_dir(&jfn_paths::config_dir()) {
@@ -933,9 +934,10 @@ pub fn jfn_app_main() -> c_int {
     };
     // The accept loop lives on `runtime`'s workers while `run_app` blocks the
     // main thread on the native loop, so `runtime` must outlive `run_app`.
-    match runtime.block_on(Listener::try_start(
+    match runtime.block_on(Listener::try_start_with_limit(
         &instance,
         jfn_instance_ipc::jfn::handle,
+        Some(jfn_instance_ipc::jfn::REQUEST_FRAME_BYTES),
     )) {
         Start::Started(_listener) => run_app(&instance, opts, cef_runtime, metadata),
         Start::AlreadyRunning => runtime.block_on(notify_running(&instance)),
@@ -948,7 +950,9 @@ pub fn jfn_app_main() -> c_int {
 
 async fn notify_running(instance: &Instance) -> c_int {
     let acked = async {
-        let mut stream = Stream::connect(instance).await?;
+        let mut stream = Stream::connect(instance)
+            .await?
+            .with_frame_limit(jfn_instance_ipc::jfn::RESPONSE_FRAME_BYTES);
         stream.send(&Request::Ping).await?;
         stream.recv::<Response>().await
     }
@@ -1046,6 +1050,18 @@ fn run_app(
 
     let boot = BackgroundCapture::Pending;
 
+    // Windows attaches its compositor and input hooks to mpv's HWND. Drain
+    // the observed window-id before platform init tries to acquire it.
+    #[cfg(target_os = "windows")]
+    let boot = match wait_for_vo_window(boot) {
+        Ok(boot) => boot,
+        Err(error) => {
+            let code = error.exit_code();
+            tracing::info!(target: "Main", "{error}");
+            return code;
+        }
+    };
+
     // Platform init precedes both the shell overlay and `CefInitialize`: the
     // overlay's surface needs the backend's compositor devices, and the
     // connect screen must be on screen while CEF is still starting.
@@ -1097,6 +1113,7 @@ fn run_app(
     } else {
         Some(runtime)
     };
+    #[cfg(not(target_os = "windows"))]
     let boot = match wait_for_vo_window(boot) {
         Ok(boot) => boot,
         Err(error) => {

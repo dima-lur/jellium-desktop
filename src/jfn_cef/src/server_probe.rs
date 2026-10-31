@@ -15,6 +15,18 @@ use jfn_jellyfin::{extract_base_url, is_valid_public_info, normalize_input};
 
 pub type ProbeCallback = Box<dyn FnOnce(Option<String>) + Send + Sync>;
 
+// Approved in requirements/resource-limits.md.
+const MAX_PUBLIC_INFO_BYTES: usize = 1024 * 1024;
+
+fn append_public_info(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    if chunk.len() > MAX_PUBLIC_INFO_BYTES.saturating_sub(body.len()) {
+        body.clear();
+        return false;
+    }
+    body.extend_from_slice(chunk);
+    true
+}
+
 #[derive(Copy, Clone, PartialEq)]
 enum Phase {
     Head,
@@ -225,15 +237,40 @@ cef::wrap_urlrequest_client! {
         }
         fn on_download_data(
             &self,
-            _request: Option<&mut Urlrequest>,
+            request: Option<&mut Urlrequest>,
             data: *const u8,
             data_length: usize,
         ) {
             let mut st = self.state.lock();
-            if st.phase == Phase::Get && !data.is_null() && data_length > 0 {
+            if !st.cancelled && st.phase == Phase::Get && !data.is_null() && data_length > 0 {
                 let slice = unsafe { std::slice::from_raw_parts(data, data_length) };
-                st.body.extend_from_slice(slice);
+                if !append_public_info(&mut st.body, slice) {
+                    let callback = st.callback.take();
+                    st.active = None;
+                    st.cancelled = true;
+                    drop(st);
+                    if let Some(request) = request { request.cancel(); }
+                    if let Some(callback) = callback { callback(None); }
+                    return;
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_PUBLIC_INFO_BYTES, append_public_info};
+    #[test]
+    fn response_limit_applies_across_chunks_and_releases_rejected_body() {
+        let mut body = Vec::new();
+        assert!(append_public_info(&mut body, b"{"));
+        assert!(append_public_info(
+            &mut body,
+            &vec![b' '; MAX_PUBLIC_INFO_BYTES - 1]
+        ));
+        assert_eq!(body.len(), MAX_PUBLIC_INFO_BYTES);
+        assert!(!append_public_info(&mut body, b"}"));
+        assert!(body.is_empty());
     }
 }

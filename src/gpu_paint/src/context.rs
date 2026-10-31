@@ -7,6 +7,21 @@ use crate::swapchain::Swapchain;
 use crate::types::WindowTarget;
 use crate::{FrameSize, ProducerId};
 
+static DEVICE_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ON_DEVICE_LOST: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+pub fn device_lost() -> bool {
+    DEVICE_LOST.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// The callback must only signal shutdown; wgpu can invoke it under GPU locks.
+pub fn on_device_lost(callback: fn()) {
+    ON_DEVICE_LOST.get_or_init(|| callback);
+    if device_lost() {
+        callback();
+    }
+}
+
 /// The one swapchain format the process presents in, on every window system.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
@@ -111,6 +126,12 @@ impl Surfaces {
 
         device.set_device_lost_callback(|reason, msg| {
             tracing::error!("gpu_paint: DEVICE LOST: {reason:?}: {msg}");
+            if reason != wgpu::DeviceLostReason::Destroyed {
+                DEVICE_LOST.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(callback) = ON_DEVICE_LOST.get() {
+                    callback();
+                }
+            }
         });
         device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
             tracing::error!("gpu_paint: wgpu error: {e}");

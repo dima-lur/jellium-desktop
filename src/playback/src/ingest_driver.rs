@@ -4,9 +4,7 @@
 //! shutdown) that don't flow through the coordinator queue.
 
 use std::sync::OnceLock;
-use std::thread::{self, JoinHandle};
 
-use crossbeam_channel::Receiver;
 use jfn_mpv::{Event, PropertyValue};
 use jfn_platform_abi::{LogicalSize, Scale};
 
@@ -273,7 +271,6 @@ fn shutdown_handler_slot() -> &'static parking_lot::Mutex<Option<ShutdownHandler
 
 struct EventThread {
     events: jfn_mpv::EventLoop,
-    join: Option<JoinHandle<()>>,
 }
 
 fn event_thread_slot() -> &'static parking_lot::Mutex<Option<EventThread>> {
@@ -304,11 +301,8 @@ fn invoke_shutdown_handler() {
     }
 }
 
-/// Spawn the [`jfn_mpv::EventLoop`] drain thread plus the ingest
-/// consumer thread that reads its receiver and routes each event through
-/// the same path [`jfn_playback_ingest_mpv_event_owned`] uses. Returns
-/// `false` if the handle is not yet initialized or the threads are
-/// already running.
+/// Read and ingest mpv events on one thread, without an intermediate queue.
+/// Returns false if the handle is unavailable or ingestion is already running.
 pub fn jfn_playback_start_mpv_event_thread() -> bool {
     let mut guard = event_thread_slot().lock();
     if guard.is_some() {
@@ -317,55 +311,38 @@ pub fn jfn_playback_start_mpv_event_thread() -> bool {
     let Some(handle) = jfn_mpv::boot::current_handle() else {
         return false;
     };
-    let (events, rx) = match jfn_mpv::EventLoop::spawn(handle) {
+    let events = match jfn_mpv::EventLoop::spawn_with(handle, ingest_event) {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("[playback] failed to spawn mpv event loop: {e}");
             return false;
         }
     };
-    let join = match thread::Builder::new()
-        .name("jfn-mpv-ingest".into())
-        .spawn(move || ingest_events(rx))
-    {
-        Ok(join) => join,
-        Err(e) => {
-            eprintln!("[playback] failed to spawn jfn-mpv-ingest thread: {e}");
-            return false;
-        }
-    };
-    *guard = Some(EventThread {
-        events,
-        join: Some(join),
-    });
+    *guard = Some(EventThread { events });
     true
 }
 
-/// Stop the drain loop, then join the ingest thread. Idempotent.
+/// Stop and join the event/ingest thread. Idempotent.
 pub fn jfn_playback_stop_mpv_event_thread() {
     let entry = event_thread_slot().lock().take();
     let Some(mut t) = entry else { return };
     t.events.stop();
-    if let Some(join) = t.join.take() {
-        let _ = join.join();
-    }
 }
 
-fn ingest_events(rx: Receiver<Event>) {
-    for event in rx {
-        if let Event::PropertyChange { id, ref value, .. } = event
-            && id == crate::ingest::observe_id::FULLSCREEN
-            && let PropertyValue::Flag(f) = value
-        {
-            invoke_fullscreen_handler(*f);
-        }
-        let Some(lease) = jfn_platform_abi::try_lease() else {
-            return;
-        };
-        let outs = ingest_event_for_ffi(&event, state(), &PlatformCtx(lease.platform()));
-        if dispatch(outs) & INGEST_FLAG_SHUTDOWN != 0 {
-            invoke_shutdown_handler();
-            return;
-        }
+fn ingest_event(event: Event) -> bool {
+    if let Event::PropertyChange { id, ref value, .. } = event
+        && id == crate::ingest::observe_id::FULLSCREEN
+        && let PropertyValue::Flag(f) = value
+    {
+        invoke_fullscreen_handler(*f);
     }
+    let Some(lease) = jfn_platform_abi::try_lease() else {
+        return false;
+    };
+    let outs = ingest_event_for_ffi(&event, state(), &PlatformCtx(lease.platform()));
+    if dispatch(outs) & INGEST_FLAG_SHUTDOWN != 0 {
+        invoke_shutdown_handler();
+        return false;
+    }
+    true
 }
