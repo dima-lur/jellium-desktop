@@ -4,13 +4,11 @@
 //! request is parked here and handed to the input thread through a posted
 //! message; the CEF UI thread that opened it returns immediately.
 
-use std::ffi::{OsStr, c_int};
+use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use jfn_platform_abi::{
-    MENU_DISMISSED, MenuHost, MenuItem, MenuRequest, MenuSelection, menu_has_selectable,
-};
+use jfn_platform_abi::{MenuHost, MenuRequest};
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
@@ -30,15 +28,7 @@ pub(crate) const WM_JFN_MENU_TRACK: u32 = WM_APP + 0x100;
 /// Asks the input thread to end the menu it is tracking.
 pub(crate) const WM_JFN_MENU_END: u32 = WM_APP + 0x101;
 
-struct Pending {
-    items: Vec<MenuItem>,
-    /// Anchor in logical (view) coordinates.
-    x: c_int,
-    y: c_int,
-    on_selected: MenuSelection,
-}
-
-static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+static PENDING: Mutex<Option<MenuRequest>> = Mutex::new(None);
 
 static TRACKING: AtomicBool = AtomicBool::new(false);
 
@@ -48,36 +38,24 @@ pub(crate) struct WinMenuHost;
 
 impl MenuHost for WinMenuHost {
     fn open(&self, req: MenuRequest) {
-        let (Some(hwnd), true) = (input_hwnd(), menu_has_selectable(&req.items)) else {
-            req.on_selected.resolve(MENU_DISMISSED);
+        let Some(hwnd) = input_hwnd() else {
             return;
         };
-        let displaced = PENDING.lock().replace(Pending {
-            items: req.items,
-            x: req.x,
-            y: req.y,
-            on_selected: req.on_selected,
-        });
-        if let Some(prev) = displaced {
-            prev.on_selected.resolve(MENU_DISMISSED);
-        }
+        let displaced = PENDING.lock().replace(req);
+        drop(displaced);
         let _ = unsafe { PostMessageW(Some(hwnd), WM_JFN_MENU_TRACK, WPARAM(0), LPARAM(0)) };
     }
 
     fn hide(&self) {
         CANCELLED.store(true, Ordering::Release);
         let pending = PENDING.lock().take();
-        if let Some(pending) = pending {
-            pending.on_selected.resolve(MENU_DISMISSED);
-        }
+        drop(pending);
         post_end();
     }
 
     fn shutdown(&self) {
         let pending = PENDING.lock().take();
-        if let Some(pending) = pending {
-            pending.on_selected.resolve(MENU_DISMISSED);
-        }
+        drop(pending);
         post_end();
     }
 }
@@ -113,38 +91,30 @@ pub(crate) fn on_input_message(hwnd: HWND, msg: u32) {
         return;
     };
     let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        pending.on_selected.resolve(MENU_DISMISSED);
         return;
     };
 
-    for item in &pending.items {
-        if item.separator {
+    let mut command: usize = 0;
+    for (g, group) in pending.groups.iter().enumerate() {
+        if g > 0 {
             let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
-            continue;
         }
-        if item.id <= 0 {
-            continue;
+        for item in group {
+            command += 1;
+            let flags = if item.enabled {
+                MF_STRING
+            } else {
+                MENU_ITEM_FLAGS(MF_STRING.0 | MF_GRAYED.0)
+            };
+            let label = wide(&item.label);
+            let _ = unsafe { AppendMenuW(menu, flags, command, PCWSTR::from_raw(label.as_ptr())) };
         }
-        let flags = if item.enabled {
-            MF_STRING
-        } else {
-            MENU_ITEM_FLAGS(MF_STRING.0 | MF_GRAYED.0)
-        };
-        let label = wide(&item.label);
-        let _ = unsafe {
-            AppendMenuW(
-                menu,
-                flags,
-                item.id as usize,
-                PCWSTR::from_raw(label.as_ptr()),
-            )
-        };
     }
 
     let scale = win_get_scale();
-    let (Some(x), Some(y)) = (scale.to_physical(pending.x), scale.to_physical(pending.y)) else {
-        tracing::error!(target: "platform", "menu anchor {},{} is unrepresentable at scale {scale}", pending.x, pending.y);
-        pending.on_selected.resolve(MENU_DISMISSED);
+    let anchor = pending.anchor;
+    let (Some(x), Some(y)) = (scale.to_physical(anchor.x), scale.to_physical(anchor.y)) else {
+        tracing::error!(target: "platform", "menu anchor {},{} is unrepresentable at scale {scale}", anchor.x, anchor.y);
         return;
     };
     let mut pt = POINT { x, y };
@@ -166,11 +136,13 @@ pub(crate) fn on_input_message(hwnd: HWND, msg: u32) {
     let _ = unsafe { DestroyMenu(menu) };
 
     if CANCELLED.swap(false, Ordering::AcqRel) {
-        pending.on_selected.resolve(MENU_DISMISSED);
         return;
     }
-    let picked = picked.0;
-    pending
-        .on_selected
-        .resolve(if picked == 0 { MENU_DISMISSED } else { picked });
+    if let Some(row) = usize::try_from(picked.0)
+        .ok()
+        .and_then(|picked| picked.checked_sub(1))
+        && let Err(err) = pending.select(row)
+    {
+        tracing::error!(target: "platform", "menu selection failed: {err}");
+    }
 }

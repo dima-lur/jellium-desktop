@@ -5,6 +5,8 @@ use std::time::Instant;
 use iced_core::widget::Id;
 use iced_core::{Color, Element};
 
+use jfn_platform_abi::lang::LanguageLoader;
+
 use crate::connection::{Connection, Screen};
 
 use crate::shell::actor::Deadline;
@@ -185,10 +187,13 @@ impl Stack {
     pub fn view<'a>(
         &'a self,
         screen: &'a Screen,
+        locale: &LanguageLoader,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         match self.top() {
-            Some(View::Connect(connect)) => connect.view(screen).map(Message::Connect),
-            Some(View::SettingsOverlay(overlay)) => overlay.view().map(Message::SettingsOverlay),
+            Some(View::Connect(connect)) => connect.view(screen, locale).map(Message::Connect),
+            Some(View::SettingsOverlay(overlay)) => {
+                overlay.view(locale).map(Message::SettingsOverlay)
+            }
             None => iced_widget::space::horizontal().into(),
         }
     }

@@ -76,7 +76,6 @@ wrap_task! {
     impl Task {
         fn execute(&self) {
             let _ = self.inner.surface().set_visibility(jfn_platform_abi::Visibility::Hidden);
-            self.inner.menu_reset();
             self.inner.close_browser_force();
             let _ = self.delivered.send(());
         }

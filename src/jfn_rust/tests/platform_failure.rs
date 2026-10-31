@@ -7,7 +7,14 @@ fn failed_backend_returns_its_cleanup_owner() -> Result<(), Box<dyn std::error::
     use jfn_platform_abi::{PlatformInitError, PreparedPlatform};
     jfn_platform_abi::install(jfn_x11::make_platform::make_x11_platform());
     let prepared = PreparedPlatform::claim(unsafe { jfn_platform_abi::get() })?;
-    let (error, prepared) = match prepared.initialize(std::ptr::null_mut()) {
+    let (error, prepared) = match prepared.initialize(
+        std::ptr::null_mut(),
+        std::sync::Arc::new(jfn_platform_abi::App::new(
+            std::sync::mpsc::channel::<jfn_platform_abi::AppMsg>().0,
+            || jfn_platform_abi::MenuSerial::new(0),
+            jfn_platform_abi::lang::detect()?,
+        )),
+    ) {
         Ok(runtime) => {
             if let Err(error) = runtime.cleanup(|| Ok::<(), std::convert::Infallible>(())) {
                 match error {

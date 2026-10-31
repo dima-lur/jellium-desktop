@@ -2,7 +2,9 @@
 //! opaque black on macOS, so its popup runs invisibly and a native NSMenu is
 //! presented in its place.
 
-use jfn_platform_abi::{MENU_DISMISSED, MenuHost, MenuRequest, menu_has_selectable};
+use std::ffi::c_int;
+
+use jfn_platform_abi::{MenuHost, MenuRequest};
 
 use crate::ns_menu::{MenuEntry, MenuSpec, present_on_main};
 
@@ -10,28 +12,34 @@ pub(crate) struct NsMenuHost;
 
 impl MenuHost for NsMenuHost {
     fn open(&self, req: MenuRequest) {
-        if !menu_has_selectable(&req.items) {
-            req.on_selected.resolve(MENU_DISMISSED);
-            return;
-        }
-        let entries = req
-            .items
-            .into_iter()
-            .map(|it| MenuEntry {
-                checked: it.id == req.initial && !it.separator,
-                title: it.label,
-                tag: it.id,
-                enabled: it.enabled,
-                separator: it.separator,
+        let current = req.current().and_then(|row| c_int::try_from(row).ok());
+        let mut row: c_int = 0;
+        let groups = req
+            .groups
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|it| {
+                        let tag = row;
+                        row += 1;
+                        MenuEntry {
+                            checked: Some(tag) == current,
+                            title: it.label.clone(),
+                            tag,
+                            enabled: it.enabled,
+                        }
+                    })
+                    .collect()
             })
             .collect();
         let spec = MenuSpec {
-            entries,
-            x: req.x,
-            y: req.y,
-            positioning_tag: (req.initial >= 0).then_some(req.initial),
-            min_width: (req.width > 0).then_some(req.width),
+            groups,
+            x: req.anchor.x,
+            y: req.anchor.y,
+            positioning_tag: current,
+            min_width: req.width.and_then(|w| c_int::try_from(w.get()).ok()),
         };
-        present_on_main(spec, Some(req.on_selected));
+        present_on_main(spec, req);
     }
 }

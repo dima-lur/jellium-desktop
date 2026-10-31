@@ -475,8 +475,9 @@ impl Platform for MacosPlatform {
         &self,
         _access: &jfn_platform_abi::LifecycleAccess,
         mpv: *mut c_void,
+        app: std::sync::Arc<jfn_platform_abi::App>,
     ) -> Result<(), jfn_platform_abi::PlatformInitError> {
-        macos_init(mpv)
+        macos_init(mpv, app)
     }
 
     fn cleanup(&self, _access: &jfn_platform_abi::LifecycleAccess) {

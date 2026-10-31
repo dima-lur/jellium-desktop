@@ -7,7 +7,7 @@ use objc2::runtime::AnyObject;
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_foundation::{NSObject, NSPoint, NSString};
 
-use jfn_platform_abi::MenuSelection;
+use jfn_platform_abi::MenuRequest;
 
 use crate::dispatch::post_to_main;
 use crate::init::{jfn_macos_get_input_view, jfn_macos_get_window};
@@ -16,12 +16,11 @@ pub(crate) struct MenuEntry {
     pub title: String,
     pub tag: c_int,
     pub enabled: bool,
-    pub separator: bool,
     pub checked: bool,
 }
 
 pub(crate) struct MenuSpec {
-    pub entries: Vec<MenuEntry>,
+    pub groups: Vec<Vec<MenuEntry>>,
     pub x: c_int,
     pub y: c_int,
     pub positioning_tag: Option<c_int>,
@@ -29,14 +28,21 @@ pub(crate) struct MenuSpec {
 }
 
 struct SelectionCb {
-    fired: Mutex<Option<MenuSelection>>,
+    fired: Mutex<Option<MenuRequest>>,
 }
 
 impl SelectionCb {
     fn fire(&self, id: c_int) {
-        let cb = self.fired.lock().take();
-        if let Some(cb) = cb {
-            cb.resolve(id);
+        let request = self.fired.lock().take();
+        if let Some(request) = request {
+            match usize::try_from(id) {
+                Ok(row) => {
+                    if let Err(err) = request.select(row) {
+                        tracing::error!(target: "platform", "menu selection failed: {err}");
+                    }
+                }
+                Err(_) => drop(request),
+            }
         }
     }
 }
@@ -90,11 +96,16 @@ unsafe fn show_menu_on_main(run: MenuRun) {
     let key_equiv = NSString::from_str("");
 
     let mut positioning_item: *mut AnyObject = std::ptr::null_mut();
-    for entry in &run.spec.entries {
-        if entry.separator {
+    let entries = run.spec.groups.iter().enumerate().flat_map(|(g, group)| {
+        group
+            .iter()
+            .enumerate()
+            .map(move |(i, entry)| (g > 0 && i == 0, entry))
+    });
+    for (starts_group, entry) in entries {
+        if starts_group {
             let sep: *mut AnyObject = unsafe { msg_send![item_cls, separatorItem] };
             let _: () = unsafe { msg_send![menu, addItem: sep] };
-            continue;
         }
         let title = NSString::from_str(&entry.title);
         let item: *mut AnyObject = unsafe { msg_send![item_cls, alloc] };
@@ -142,9 +153,9 @@ unsafe fn show_menu_on_main(run: MenuRun) {
     drop(target);
 }
 
-pub(crate) fn present_on_main(spec: MenuSpec, on_selected: Option<MenuSelection>) {
+pub(crate) fn present_on_main(spec: MenuSpec, request: MenuRequest) {
     let cb = Arc::new(SelectionCb {
-        fired: Mutex::new(on_selected),
+        fired: Mutex::new(Some(request)),
     });
     post_to_main(move || unsafe { show_menu_on_main(MenuRun { cb, spec }) });
 }

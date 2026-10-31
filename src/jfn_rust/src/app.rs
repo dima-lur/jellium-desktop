@@ -4,6 +4,7 @@
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crate::shell::metadata::ApplicationMetadata;
@@ -13,7 +14,7 @@ use jfn_cef::{APP_VERSION_FULL, BrowserCef, InitializedCef, LoadedCef, ProcessDi
 use jfn_instance_ipc::jfn::{Request, Response};
 use jfn_instance_ipc::{Listener, Start, Stream};
 use jfn_logging::{Category, Level};
-use jfn_platform_abi::{IdleInhibitLevel, Instance, Platform, WindowGeometry};
+use jfn_platform_abi::{App, IdleInhibitLevel, Instance, Platform, WindowGeometry};
 
 use crate::cli;
 
@@ -350,6 +351,7 @@ fn initialize_cef(
     runtime: BrowserCef,
     platform: &jfn_platform_abi::PlatformRuntime,
     opts: &StartupOptions,
+    app: &App,
 ) -> Result<CefInit, jfn_cef::InitError> {
     let shared_textures = plat().shared_texture_supported() && !opts.disable_gpu_compositing;
     tracing::info!(target: "Main", "[FLOW] calling CefInitialize...");
@@ -360,6 +362,7 @@ fn initialize_cef(
             log_severity: cef_severity_for_cef_filter(),
             remote_debugging_port: opts.remote_debugging_port,
             disable_gpu_compositing: !shared_textures,
+            locale: app.locale().language().to_string(),
         },
     )?;
     tracing::info!(target: "Main",
@@ -611,9 +614,10 @@ impl StartupResources<PreparedNative> {
 impl StartupResources<MpvNative> {
     fn initialize(
         mut self,
+        app: Arc<App>,
     ) -> Result<StartupResources<InitializedNative>, jfn_platform_abi::PlatformInitError> {
         let MpvNative { prepared, mpv } = self.native.take();
-        match prepared.initialize(mpv.raw().cast()) {
+        match prepared.initialize(mpv.raw().cast(), app) {
             Ok(platform) => Ok(StartupResources {
                 services: self.services,
                 native: NativeOwner(Some(InitializedNative { platform, mpv })),
@@ -804,6 +808,7 @@ fn start_web_overlay(
     rate: Option<jfn_gpu_paint::RefreshRate>,
     cef: &CefInit,
     user_video_bg: u32,
+    app: Arc<App>,
 ) -> Result<StartedOverlay, OverlayStartupError> {
     // Must run before the browser is created: the pre-loaded page fires its
     // initial theme-color IPC at DOMContentLoaded.
@@ -831,7 +836,7 @@ fn start_web_overlay(
             }),
             frame_rate: rate,
             shared_textures: cef.shared_textures,
-            application_menu: crate::app_menu::cef_menu(),
+            app,
         },
     )?;
     crate::shell::post(crate::shell::actor::Work::WebAttached(overlay.clone()));
@@ -902,6 +907,13 @@ pub fn jfn_app_main() -> c_int {
     let opts = resolve_startup_options(&cli);
 
     init_logging(opts.log_file.as_deref(), &opts.log_level, &version);
+    let locale = match jfn_platform_abi::lang::detect() {
+        Ok(locale) => locale,
+        Err(error) => {
+            tracing::error!(target: "Main", "{error}");
+            return 1;
+        }
+    };
     let metadata = match application_metadata(version) {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -939,7 +951,7 @@ pub fn jfn_app_main() -> c_int {
         jfn_instance_ipc::jfn::handle,
         Some(jfn_instance_ipc::jfn::REQUEST_FRAME_BYTES),
     )) {
-        Start::Started(_listener) => run_app(&instance, opts, cef_runtime, metadata),
+        Start::Started(_listener) => run_app(&instance, opts, cef_runtime, metadata, locale),
         Start::AlreadyRunning => runtime.block_on(notify_running(&instance)),
         Start::Failed(e) => {
             tracing::error!(target: "Main", "could not start instance IPC: {e}");
@@ -970,6 +982,7 @@ fn run_app(
     opts: StartupOptions,
     runtime: BrowserCef,
     metadata: ApplicationMetadata,
+    locale: jfn_platform_abi::lang::LanguageLoader,
 ) -> c_int {
     let prepared = match jfn_platform_abi::PreparedPlatform::claim(plat()) {
         Ok(prepared) => prepared,
@@ -1062,10 +1075,19 @@ fn run_app(
         }
     };
 
+    let menu = Arc::new(crate::app_menu::MenuManager::new());
+    let app = Arc::new(App::new(
+        crate::shell::shell_sender(),
+        {
+            let menu = Arc::clone(&menu);
+            move || menu.next_serial()
+        },
+        locale,
+    ));
     // Platform init precedes both the shell overlay and `CefInitialize`: the
     // overlay's surface needs the backend's compositor devices, and the
     // connect screen must be on screen while CEF is still starting.
-    let mut resources = match resources.initialize() {
+    let mut resources = match resources.initialize(Arc::clone(&app)) {
         Ok(resources) => resources,
         Err(error) => {
             tracing::error!(target: "Main", "{error}");
@@ -1074,10 +1096,8 @@ fn run_app(
     };
     let platform = &resources.native.get().platform;
     tracing::info!(target: "Main", "Platform init ok");
-    jfn_platform_abi::set_about_handler(crate::shell::shell_open_about);
-    jfn_platform_abi::set_client_settings_handler(crate::shell::shell_open_client_settings);
     let shell_readiness =
-        match crate::shell::shell_start(platform, metadata, crate::app_menu::shell_actions()) {
+        match crate::shell::shell_start(platform, metadata, Arc::clone(&app), menu) {
             Ok((shell, readiness)) => {
                 resources.services.shell = Some(shell);
                 Some(readiness)
@@ -1100,7 +1120,7 @@ fn run_app(
     // allows it, it runs while the core thread builds the VO and its GPU
     // context instead of after.
     let deferred = if plat().cef_init_precedes_mpv_window() {
-        match initialize_cef(runtime, platform, &opts) {
+        match initialize_cef(runtime, platform, &opts, &app) {
             Ok(cef) => {
                 resources.services.cef = Some(cef);
                 None
@@ -1133,7 +1153,7 @@ fn run_app(
         }
     }
     log_mpv_versions();
-    run_with_cef(boot, deferred, resources, &opts, instance)
+    run_with_cef(boot, deferred, resources, &opts, instance, app)
 }
 
 // =====================================================================
@@ -1219,10 +1239,8 @@ fn boot_progress(boot: &BackgroundCapture) -> Option<ReadyBoot> {
     })
 }
 
-// =====================================================================
-// run_with_cef body — Rust port
-// =====================================================================
-
+// ==============================================================// run_with_cef body — Rust port
+// ==============================================================
 fn cef_severity_for_cef_filter() -> jfn_cef::LogSeverity {
     let enabled = |level| jfn_logging::log_enabled(Category::Cef, level);
     if enabled(Level::Trace) || enabled(Level::Debug) {
@@ -1285,6 +1303,7 @@ fn run_with_cef(
     mut resources: StartupResources<InitializedNative>,
     opts: &StartupOptions,
     instance: &Instance,
+    app: Arc<App>,
 ) -> c_int {
     let mpv_raw = resources.native.get().mpv.raw();
     if jfn_config::titlebar_theme_color() {
@@ -1293,7 +1312,7 @@ fn run_with_cef(
     publish_device_profile(mpv_raw);
     if let Some(runtime) = deferred {
         let platform = &resources.native.get().platform;
-        match initialize_cef(runtime, platform, opts) {
+        match initialize_cef(runtime, platform, opts, &app) {
             Ok(cef) => resources.services.cef = Some(cef),
             Err(error) => {
                 tracing::error!(target: "Main", "{error}");
@@ -1310,7 +1329,7 @@ fn run_with_cef(
     let StartedOverlay {
         manager_thread,
         overlay,
-    } = match start_web_overlay(rate, cef, boot.user_video_bg) {
+    } = match start_web_overlay(rate, cef, boot.user_video_bg, app) {
         Ok(started) => started,
         Err(error) => {
             tracing::error!(target: "Main", "overlay startup: {error}");

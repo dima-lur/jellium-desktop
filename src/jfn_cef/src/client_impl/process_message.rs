@@ -26,7 +26,7 @@ pub(super) fn on_process_message_received(
                 } else {
                     Vec::new()
                 };
-                let selected = args.int(1);
+                let selected = usize::try_from(args.int(1)).ok();
                 let selectable = if let Some(list) = args.list(2) {
                     let n = list.size();
                     let mut v = Vec::with_capacity(n);

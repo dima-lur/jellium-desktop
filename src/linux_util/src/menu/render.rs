@@ -3,7 +3,7 @@ use iced_graphics::text::cosmic_text::{
 };
 use tiny_skia::{Color as SkColor, FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 
-use jfn_platform_abi::{MenuItem, Scale};
+use jfn_platform_abi::{Item, Scale};
 
 // Logical (unscaled) metrics; multiplied by the display scale at layout time.
 const FONT_PX: f32 = 13.0;
@@ -39,7 +39,6 @@ pub struct Row {
     pub item: usize,
     pub y: i32,
     pub h: i32,
-    pub separator: bool,
     pub enabled: bool,
 }
 
@@ -48,6 +47,7 @@ pub struct Layout {
     pub width: i32,
     pub height: i32,
     pub rows: Vec<Row>,
+    pub lines: Vec<i32>,
     pub selectable: Vec<usize>,
     scale: Scale,
 }
@@ -59,6 +59,7 @@ impl Layout {
             width,
             height,
             rows,
+            lines: Vec::new(),
             selectable,
             scale: Scale::ONE,
         }
@@ -74,7 +75,7 @@ impl Layout {
         }
         self.rows
             .iter()
-            .find(|r| !r.separator && r.enabled && y >= r.y && y < r.y + r.h)
+            .find(|r| r.enabled && y >= r.y && y < r.y + r.h)
             .map(|r| r.item)
     }
 
@@ -147,7 +148,7 @@ impl Default for Fonts {
 
 /// `None` when the reported scale does not map one of the menu's logical
 /// metrics to a physical one.
-pub fn layout(fonts: &mut Fonts, items: &[MenuItem], scale: Scale) -> Option<Layout> {
+pub fn layout(fonts: &mut Fonts, groups: &[Vec<Item>], scale: Scale) -> Option<Layout> {
     let s = scale.as_f32();
     let font_px = FONT_PX * s;
     let row_h = scale.to_physical(ROW_H)?;
@@ -156,29 +157,34 @@ pub fn layout(fonts: &mut Fonts, items: &[MenuItem], scale: Scale) -> Option<Lay
     let text_w_budget = (PAD_X + PAD_RIGHT) * s;
 
     let mut max_text = MIN_W * s - text_w_budget;
-    for it in items {
-        if !it.separator {
-            max_text = max_text.max(fonts.text_width(&it.label, font_px));
-        }
+    for it in groups.iter().flatten() {
+        max_text = max_text.max(fonts.text_width(&it.label, font_px));
     }
     let width = (max_text + text_w_budget).ceil() as i32;
 
-    let mut rows = Vec::with_capacity(items.len());
+    let mut rows = Vec::new();
+    let mut lines = Vec::new();
     let mut selectable = Vec::new();
     let mut y = pad_y;
-    for (i, it) in items.iter().enumerate() {
-        let h = if it.separator { sep_h } else { row_h };
-        rows.push(Row {
-            item: i,
-            y,
-            h,
-            separator: it.separator,
-            enabled: it.enabled,
-        });
-        if !it.separator && it.enabled {
-            selectable.push(i);
+    let mut i = 0;
+    for (g, group) in groups.iter().enumerate() {
+        if g > 0 {
+            lines.push(y);
+            y += sep_h;
         }
-        y += h;
+        for it in group {
+            rows.push(Row {
+                item: i,
+                y,
+                h: row_h,
+                enabled: it.enabled,
+            });
+            if it.enabled {
+                selectable.push(i);
+            }
+            y += row_h;
+            i += 1;
+        }
     }
     let height = y + pad_y;
 
@@ -186,6 +192,7 @@ pub fn layout(fonts: &mut Fonts, items: &[MenuItem], scale: Scale) -> Option<Lay
         width,
         height,
         rows,
+        lines,
         selectable,
         scale,
     })
@@ -194,7 +201,7 @@ pub fn layout(fonts: &mut Fonts, items: &[MenuItem], scale: Scale) -> Option<Lay
 pub fn paint(
     fonts: &mut Fonts,
     layout: &Layout,
-    items: &[MenuItem],
+    groups: &[Vec<Item>],
     active: i32,
 ) -> Option<Pixmap> {
     let s = layout.scale.as_f32();
@@ -222,22 +229,21 @@ pub fn paint(
 
     let pad_x = PAD_X * s;
     let font_px = FONT_PX * s;
-    for row in &layout.rows {
-        let it = &items[row.item];
-        if row.separator {
-            if let Some(rect) = Rect::from_xywh(
-                pad_x,
-                row.y as f32 + row.h as f32 / 2.0,
-                w - 2.0 * pad_x,
-                (1.0 * s).max(1.0),
-            ) {
-                let mut p = Paint::default();
-                p.set_color(sep());
-                pm.fill_rect(rect, &p, Transform::identity(), None);
-            }
-            continue;
+    let sep_h = SEP_H as f32 * s;
+    for &line_y in &layout.lines {
+        if let Some(rect) = Rect::from_xywh(
+            pad_x,
+            line_y as f32 + sep_h / 2.0,
+            w - 2.0 * pad_x,
+            (1.0 * s).max(1.0),
+        ) {
+            let mut p = Paint::default();
+            p.set_color(sep());
+            pm.fill_rect(rect, &p, Transform::identity(), None);
         }
+    }
 
+    for (row, it) in layout.rows.iter().zip(groups.iter().flatten()) {
         if row.item as i32 == active
             && let Some(rect) = Rect::from_xywh(1.0, row.y as f32, w - 2.0, row.h as f32)
         {

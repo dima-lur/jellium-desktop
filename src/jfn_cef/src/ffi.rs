@@ -113,7 +113,8 @@ pub(crate) fn jfn_cef_initialize(
         disable_signal_handlers: 1,
         log_severity: options.log_severity.native(),
         remote_debugging_port: options.remote_debugging_port.native(),
-        locale: CefString::from("en-US"),
+        locale: CefString::from(options.locale.as_str()),
+        accept_language_list: CefString::from(options.locale.as_str()),
         user_agent: CefString::from(concat!(
             "Mozilla/5.0 jellium-desktop/",
             env!("JFN_APP_VERSION")

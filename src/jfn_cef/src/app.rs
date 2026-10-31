@@ -313,7 +313,10 @@ wrap_render_process_handler! {
                             }
                             reply_args.set_list(0, Some(&mut list));
                         }
-                        reply_args.set_int(1, popup.selected);
+                        reply_args.set_int(
+                            1,
+                            popup.selected.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1),
+                        );
                         if let Some(mut sel_list) = list_value_create() {
                             for (i, idx) in popup.selectable.iter().enumerate() {
                                 sel_list.set_int(i, *idx);
@@ -381,14 +384,14 @@ impl Drop for ContextExit<'_> {
 
 struct PopupOptions {
     options: Vec<String>,
-    selected: i32,
+    selected: Option<usize>,
     selectable: Vec<i32>,
     anchor: Option<(i32, i32)>,
 }
 
 fn collect_popup_options(frame: &Frame) -> PopupOptions {
     let mut options = Vec::new();
-    let mut selected = -1;
+    let mut selected = None;
     let mut selectable = Vec::new();
     let mut anchor = None;
     let Some(ctx) = frame.v8_context() else {
@@ -551,7 +554,7 @@ fn collect_popup_options(frame: &Frame) -> PopupOptions {
     if let Some(sel) = el.value_bykey(Some(&sel_key))
         && sel.is_int() == 1
     {
-        selected = sel.int_value();
+        selected = usize::try_from(sel.int_value()).ok();
     }
     PopupOptions {
         options,

@@ -17,7 +17,7 @@ use std::ptr;
 use objc2::ffi::{class_addProtocol, imp_implementationWithBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Bool, Sel};
-use objc2::{ClassType, DefinedClass, class, define_class, extern_class, msg_send, sel};
+use objc2::{AnyThread, ClassType, DefinedClass, class, define_class, extern_class, msg_send, sel};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSRect};
 
 // The input NSView is created by the input module; we adopt the
@@ -241,17 +241,20 @@ fn attach_cef_app_protocol(cls: &AnyClass) {
 // native App menu's "About" item.
 // =====================================================================
 
+struct AppMenuIvars {
+    app: std::sync::Arc<jfn_platform_abi::App>,
+}
+
 define_class!(
     #[unsafe(super(NSObject))]
     #[name = "JellyfinAppMenuTarget"]
+    #[ivars = AppMenuIvars]
     pub struct JellyfinAppMenuTarget;
 
     impl JellyfinAppMenuTarget {
         #[unsafe(method(showAbout:))]
         unsafe fn show_about(&self, _sender: *mut AnyObject) {
-            // The installed shell handler retargets the persistent overlay to
-            // About without replacing its Settings state.
-            jfn_platform_abi::request_about();
+            self.ivars().app.open_about();
         }
     }
 
@@ -647,7 +650,10 @@ use std::time::Instant;
 // link.
 // =====================================================================
 
-pub fn macos_init(_mpv: *mut c_void) -> Result<(), jfn_platform_abi::PlatformInitError> {
+pub fn macos_init(
+    _mpv: *mut c_void,
+    app: std::sync::Arc<jfn_platform_abi::App>,
+) -> Result<(), jfn_platform_abi::PlatformInitError> {
     tracing::info!(target: LOG_TARGET, "[INIT] macos_init: waiting for mpv window");
 
     let mut state = INIT_STATE.lock();
@@ -835,6 +841,8 @@ pub fn macos_init(_mpv: *mut c_void) -> Result<(), jfn_platform_abi::PlatformIni
         // is a driver for its ticks to reach.
         start_wake_observer(&mut state);
 
+        install_main_menu(&mut state, app);
+
         tracing::info!(
             target: LOG_TARGET,
             "[INIT] Metal compositor initialized input_view={:?}",
@@ -873,7 +881,6 @@ pub fn macos_cleanup() {
 
 // =====================================================================
 // macos_early_init — install JellyfinApplication as the NSApp instance,
-// set the activation policy, build the App + Edit menu bar.
 // =====================================================================
 
 pub fn macos_early_init() {
@@ -921,15 +928,22 @@ pub fn macos_early_init() {
             let _: () = msg_send![defaults, setBool: true, forKey: ns];
         }
 
-        // Allocate the App menu target (kept alive for process lifetime
-        // via INIT_STATE).
-        let mt: Retained<JellyfinAppMenuTarget> = msg_send![JellyfinAppMenuTarget::class(), new];
-        let mt_obj: *mut AnyObject = Retained::into_raw(mt) as *mut AnyObject;
-        INIT_STATE.lock().app_menu_target = mt_obj;
-
         // Subscribe to NSApplication hide/unhide and NSWorkspace sleep/wake
         // so the manager FSM can drive CEF visibility on lifecycle changes.
         install_lifecycle_observer();
+
+        let _: () = msg_send![app_obj, activateIgnoringOtherApps: true];
+    }
+}
+
+unsafe fn install_main_menu(state: &mut InitState, app: std::sync::Arc<jfn_platform_abi::App>) {
+    unsafe {
+        let app_obj: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+
+        let mt = JellyfinAppMenuTarget::alloc().set_ivars(AppMenuIvars { app });
+        let mt: Retained<JellyfinAppMenuTarget> = msg_send![super(mt), init];
+        let mt_obj: *mut AnyObject = Retained::into_raw(mt) as *mut AnyObject;
+        state.app_menu_target = mt_obj;
 
         // Build the menu bar.
         let menubar: *mut AnyObject = msg_send![class!(NSMenu), alloc];
@@ -1004,8 +1018,6 @@ pub fn macos_early_init() {
 
         let _: () = msg_send![app_obj, setMainMenu: menubar];
         let _: () = msg_send![menubar, release];
-
-        let _: () = msg_send![app_obj, activateIgnoringOtherApps: true];
     }
 }
 

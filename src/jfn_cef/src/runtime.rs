@@ -198,6 +198,7 @@ pub struct InitOptions {
     pub log_severity: LogSeverity,
     pub remote_debugging_port: DebuggingPort,
     pub disable_gpu_compositing: bool,
+    pub locale: String,
 }
 
 #[derive(Debug, thiserror::Error)]

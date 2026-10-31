@@ -27,13 +27,13 @@ use size::view_size;
 
 pub struct WebOverlayConfig {
     pub on_event: crate::WebEventHandler,
-    pub application_menu: crate::ApplicationMenu,
+    pub app: Arc<jfn_platform_abi::App>,
     pub frame_rate: Option<RefreshRate>,
     pub shared_textures: bool,
 }
 
 struct Overlay {
-    application_menu: Mutex<Option<crate::ApplicationMenu>>,
+    app: Arc<jfn_platform_abi::App>,
     session: Arc<crate::runtime::Session>,
     platform: Mutex<Option<jfn_platform_abi::PlatformLease>>,
     subscription: Mutex<Option<jfn_input::ShellStateSubscription>>,
@@ -90,7 +90,7 @@ impl WebOverlay {
         }
         let overlay = WebOverlay {
             inner: Arc::new(Overlay {
-                application_menu: Mutex::new(Some(config.application_menu)),
+                app: config.app,
                 session: Arc::clone(&runtime.session),
                 platform: Mutex::new(Some(runtime.platform_lease())),
                 subscription: Mutex::new(None),
@@ -175,9 +175,6 @@ impl WebOverlay {
         let Some(platform) = self.inner.platform.lock().clone() else {
             return;
         };
-        let Some(application_menu) = self.inner.application_menu.lock().clone() else {
-            return;
-        };
         let surface = WebOverlaySurface::allocate(platform);
         let client = Inner::new(
             Arc::clone(&self.inner.session),
@@ -185,10 +182,11 @@ impl WebOverlay {
             Arc::clone(&self.inner.deferred_navigation),
             self.inner.paint_mode,
             self.inner.frame_rate.load(),
+            Arc::clone(&self.inner.app),
         );
         client.set_name("web");
         client.apply_view_size(size);
-        crate::business_web::install(&client, application_menu);
+        crate::business_web::install(&client);
         let _ = self.inner.client.set(Arc::downgrade(&client));
         jfn_logging::log(
             jfn_logging::Category::Cef,
@@ -351,8 +349,6 @@ impl WebOverlay {
                 post_close_and_wait(client, deadline)?;
             }
             self.inner.session.wait_for_producers(deadline)?;
-            let application_menu = self.inner.application_menu.lock().take();
-            drop(application_menu);
             Ok(())
         })?;
         *STARTED.lock() = Weak::new();

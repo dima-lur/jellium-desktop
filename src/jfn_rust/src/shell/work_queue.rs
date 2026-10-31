@@ -8,7 +8,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
-pub(super) struct WorkSender {
+pub(crate) struct WorkSender {
     queue: Arc<Mutex<VecDeque<Work>>>,
     wake: mpsc::SyncSender<()>,
 }
@@ -60,6 +60,12 @@ impl WorkSender {
                 Err(QueueClosed)
             }
         }
+    }
+}
+
+impl jfn_platform_abi::MessageSender<Work> for WorkSender {
+    fn send_message(&self, message: Work) {
+        drop(self.send(message));
     }
 }
 
@@ -132,5 +138,50 @@ mod tests {
         let batch = rx.take();
         assert_eq!(batch.len(), 1);
         assert!(matches!(batch.front(), Some(Work::Shutdown)));
+    }
+
+    #[test]
+    fn menu_actions_use_actor_queue_and_preserve_order() -> Result<(), Box<dyn std::error::Error>> {
+        use jfn_platform_abi::{App, ChannelValue, Item, LogicalPoint, MenuRequest, MenuSerial};
+
+        let (tx, rx) = work_channel();
+        let app = App::new(
+            tx.clone(),
+            || MenuSerial::new(0),
+            jfn_platform_abi::lang::detect()?,
+        );
+        assert!(tx.send(pointer(1.0)).is_ok());
+        app.open_client_settings();
+        assert!(tx.send(pointer(2.0)).is_ok());
+        let mut batch = rx.take();
+        assert_eq!(batch.len(), 3);
+        assert!(matches!(batch.remove(1), Some(Work::OpenClientSettings)));
+
+        let builder = app.new_menu(LogicalPoint { x: 0, y: 0 });
+        let serial = builder.serial();
+        app.open_dropdown(
+            builder
+                .add_items(vec![Item {
+                    label: "About".into(),
+                    enabled: true,
+                    value: ChannelValue::new(tx.clone(), Work::OpenAbout),
+                }])
+                .add_on_closed(ChannelValue::new(tx, Work::CloseMenu(serial))),
+        );
+        let mut batch = rx.take();
+        assert_eq!(batch.len(), 1);
+        if let Some(Work::OpenDropdown(received, builder)) = batch.pop_front() {
+            assert_eq!(received, serial);
+            MenuRequest::from(builder).select(0)?;
+        } else {
+            return Err("menu was not delivered to the actor".into());
+        }
+        let mut actions = rx.take();
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(actions.pop_front(), Some(Work::OpenAbout)));
+        assert!(
+            matches!(actions.pop_front(), Some(Work::CloseMenu(received)) if received == serial)
+        );
+        Ok(())
     }
 }

@@ -3,6 +3,7 @@
 use iced_core::widget::Id;
 use iced_core::{Element, Length, Padding};
 use iced_widget::{button, checkbox, column, scrollable, text};
+use jfn_platform_abi::lang::{LanguageLoader, SettingsLabel};
 use jfn_platform_abi::{DisplayBackend, WindowDecorations};
 
 use crate::shell::controls;
@@ -23,16 +24,13 @@ pub const LOG_LEVEL_CONTROL: Id = Id::new("shell-settings-log-level");
 pub const OPEN_MPV_CONFIG_CONTROL: Id = Id::new("shell-settings-open-mpv-config");
 pub const RESET_SERVER_CONTROL: Id = Id::new("shell-settings-reset-server");
 
-pub const TITLE: &str = "Settings";
-pub const CLOSE_LABEL: &str = "Close Settings";
-
-pub const SECTION_TITLES: [&str; 6] = [
-    "Playback",
-    "Audio",
-    "Transcode",
-    "Advanced",
-    "MPV config",
-    "Server",
+pub const SECTION_TITLES: [SettingsLabel; 6] = [
+    SettingsLabel::Playback,
+    SettingsLabel::Audio,
+    SettingsLabel::Transcode,
+    SettingsLabel::Advanced,
+    SettingsLabel::MpvConfig,
+    SettingsLabel::Server,
 ];
 
 #[derive(Clone, Debug)]
@@ -92,76 +90,98 @@ impl Settings {
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+    pub fn view(
+        &self,
+        locale: &LanguageLoader,
+    ) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+        let label = |label| locale.settings_label(label);
         let hwdec_selected = Self::selected_hwdec(jfn_config::hwdec());
         let audio_channels = jfn_config::audio_channels();
         let log_level = jfn_config::log_level();
+        let channel_locale = locale.clone();
+        let decoration_locale = locale.clone();
+        let log_locale = locale.clone();
 
         let mut controls = column![
-            text("Changes take effect after restarting the application.").class(Some(theme::MUTED)),
-            self.group(SECTION_TITLES[0], column![self.selection(
-                "Hardware Decoding",
-                controls::select(
-                    HARDWARE_DECODING_CONTROL,
-                    hwdec_selected,
-                    Self::hardware_decoding_choices(),
-                    Clone::clone,
-                    Message::HardwareDecodingChanged,
-                ),
-                "Hardware video decoding mode. Use \"auto\" for automatic detection or \"no\" to disable.",
-            )]),
-            self.group(SECTION_TITLES[1], column![
-                self.setting(
-                    "Audio Passthrough",
-                    crate::shell::field::field(AUDIO_PASSTHROUGH_FIELD, "", &self.audio_passthrough)
+            text(label(SettingsLabel::RestartNotice)).class(Some(theme::MUTED)),
+            self.group(
+                label(SECTION_TITLES[0]),
+                column![self.selection(
+                    label(SettingsLabel::HardwareDecoding),
+                    controls::select(
+                        HARDWARE_DECODING_CONTROL,
+                        hwdec_selected,
+                        Self::hardware_decoding_choices(),
+                        Clone::clone,
+                        Message::HardwareDecodingChanged,
+                    ),
+                    label(SettingsLabel::HardwareDecodingHelp),
+                )]
+            ),
+            self.group(
+                label(SECTION_TITLES[1]),
+                column![
+                    self.setting(
+                        label(SettingsLabel::AudioPassthrough),
+                        crate::shell::field::field(
+                            AUDIO_PASSTHROUGH_FIELD,
+                            "",
+                            &self.audio_passthrough
+                        )
                         .on_input(Message::AudioPassthroughEdited)
                         .on_submit(Message::CommitAudioPassthrough)
                         .on_unfocus(Message::CommitAudioPassthrough)
                         .padding(Padding::from([8, 10]))
                         .into(),
-                    "Comma-separated list of codecs to pass through to the audio device (e.g. ac3,eac3,dts-hd,truehd). Leave empty to disable.",
-                ),
-                self.toggle(
-                    EXCLUSIVE_AUDIO_CONTROL,
-                    "Exclusive Audio Output",
-                    jfn_config::audio_exclusive(),
-                    Message::ExclusiveAudioOutputChanged,
-                    "Take exclusive control of the audio device during playback. May reduce latency but prevents other apps from playing audio.",
-                ),
-                self.selection(
-                    "Audio Channel Layout",
-                    controls::select(
-                        CHANNEL_LAYOUT_CONTROL,
-                        audio_channels,
-                        ["", "stereo", "5.1", "7.1"].map(str::to_owned).to_vec(),
-                        |value: &String| audio_channel_label(value),
-                        Message::AudioChannelLayoutChanged,
+                        label(SettingsLabel::AudioPassthroughHelp),
                     ),
-                    "Force a specific channel layout. Leave empty for auto-detection.",
-                ),
-            ]),
-            self.group(SECTION_TITLES[2], column![self.toggle(
-                FORCE_TRANSCODE_CONTROL,
-                "Force Transcoding",
-                jfn_config::force_transcoding(),
-                Message::ForceTranscodingChanged,
-                "Always request a transcoded stream from the server, even when direct play would work.",
-            )]),
+                    self.toggle(
+                        EXCLUSIVE_AUDIO_CONTROL,
+                        label(SettingsLabel::ExclusiveAudio),
+                        jfn_config::audio_exclusive(),
+                        Message::ExclusiveAudioOutputChanged,
+                        label(SettingsLabel::ExclusiveAudioHelp),
+                    ),
+                    self.selection(
+                        label(SettingsLabel::ChannelLayout),
+                        controls::select(
+                            CHANNEL_LAYOUT_CONTROL,
+                            audio_channels,
+                            ["", "stereo", "5.1", "7.1"].map(str::to_owned).to_vec(),
+                            move |value: &String| audio_channel_label(&channel_locale, value),
+                            Message::AudioChannelLayoutChanged,
+                        ),
+                        label(SettingsLabel::ChannelLayoutHelp),
+                    ),
+                ]
+            ),
+            self.group(
+                label(SECTION_TITLES[2]),
+                column![self.toggle(
+                    FORCE_TRANSCODE_CONTROL,
+                    label(SettingsLabel::ForceTranscoding),
+                    jfn_config::force_transcoding(),
+                    Message::ForceTranscodingChanged,
+                    label(SettingsLabel::ForceTranscodingHelp),
+                )]
+            ),
         ]
         .spacing(22);
 
         let mut advanced = column![].spacing(16);
         if !self.decoration_options.is_empty() {
             advanced = advanced.push(self.selection(
-                "Window Decorations",
+                label(SettingsLabel::WindowDecorations),
                 controls::select(
                     WINDOW_DECORATION_CONTROL,
                     jfn_config::configured_window_decorations(),
                     self.decoration_options.clone(),
-                    decoration_label,
+                    move |value: &Option<WindowDecorations>| {
+                        decoration_label(&decoration_locale, value)
+                    },
                     Message::WindowDecorationsChanged,
                 ),
-                "How the window titlebar is drawn. Changing requires restart.",
+                label(SettingsLabel::WindowDecorationsHelp),
             ));
         }
         if jfn_platform_abi::try_lease()
@@ -169,59 +189,67 @@ impl Settings {
         {
             advanced = advanced.push(self.toggle(
                 TRANSPARENT_TITLEBAR_CONTROL,
-                "Transparent Titlebar",
+                label(SettingsLabel::TransparentTitlebar),
                 jfn_config::transparent_titlebar(),
                 Message::TransparentTitlebarChanged,
-                "Overlay traffic light buttons on the window content instead of a separate titlebar. Requires restart.",
+                label(SettingsLabel::TransparentTitlebarHelp),
             ));
         }
         advanced = advanced
             .push(self.toggle(
                 HIDE_SCROLLBAR_CONTROL,
-                "Hide Scrollbar",
+                label(SettingsLabel::HideScrollbar),
                 jfn_config::hide_scrollbar(),
                 Message::HideScrollbarChanged,
-                "Hide scrollbars throughout the app. Scrolling with the wheel, trackpad, and keyboard still works. Requires restart.",
+                label(SettingsLabel::HideScrollbarHelp),
             ))
-            .push(self.setting(
-                "Device Name",
-                crate::shell::field::field(DEVICE_NAME_FIELD, &self.device_name_default, &self.device_name)
+            .push(
+                self.setting(
+                    label(SettingsLabel::DeviceName),
+                    crate::shell::field::field(
+                        DEVICE_NAME_FIELD,
+                        &self.device_name_default,
+                        &self.device_name,
+                    )
                     .on_input(Message::DeviceNameEdited)
                     .on_submit(Message::CommitDeviceName)
                     .on_unfocus(Message::CommitDeviceName)
                     .padding(Padding::from([8, 10]))
                     .into(),
-                "Identifies this machine to the server. Leave blank to use the system hostname.",
-            ))
-            .push(self.selection(
-                "Log Level",
-                controls::select(
-                    LOG_LEVEL_CONTROL,
-                    log_level,
-                    ["", "verbose", "debug", "warn", "error"]
-                        .map(str::to_owned)
-                        .to_vec(),
-                    |value: &String| log_level_label(value),
-                    Message::LogLevelChanged,
+                    label(SettingsLabel::DeviceNameHelp),
                 ),
-                "Set the application log verbosity level.",
-            ));
-        controls = controls.push(self.group(SECTION_TITLES[3], advanced));
+            )
+            .push(
+                self.selection(
+                    label(SettingsLabel::LogLevel),
+                    controls::select(
+                        LOG_LEVEL_CONTROL,
+                        log_level,
+                        ["", "verbose", "debug", "warn", "error"]
+                            .map(str::to_owned)
+                            .to_vec(),
+                        move |value: &String| log_level_label(&log_locale, value),
+                        Message::LogLevelChanged,
+                    ),
+                    label(SettingsLabel::LogLevelHelp),
+                ),
+            );
+        controls = controls.push(self.group(label(SECTION_TITLES[3]), advanced));
         if self.server_available {
             controls = controls
                 .push(self.group(
-                    SECTION_TITLES[4],
+                    label(SECTION_TITLES[4]),
                     column![self.action(
                         OPEN_MPV_CONFIG_CONTROL,
-                        "Open mpv config directory",
+                        label(SettingsLabel::OpenMpvConfig),
                         Message::OpenMpvConfigDirectory,
                     )],
                 ))
                 .push(self.group(
-                    SECTION_TITLES[5],
+                    label(SECTION_TITLES[5]),
                     column![self.action(
                         RESET_SERVER_CONTROL,
-                        "Reset Saved Server",
+                        label(SettingsLabel::ResetServer),
                         Message::ResetSavedServer,
                     )],
                 ));
@@ -336,7 +364,7 @@ impl Settings {
 
     fn group<'a>(
         &self,
-        title: &'a str,
+        title: String,
         controls: iced_widget::Column<'a, Message, Theme, iced_wgpu::Renderer>,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         column![text(title).size(20), controls.spacing(16)]
@@ -346,9 +374,9 @@ impl Settings {
 
     fn setting<'a>(
         &self,
-        label: &'a str,
+        label: String,
         control: Element<'a, Message, Theme, iced_wgpu::Renderer>,
-        help: &'a str,
+        help: String,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         column![
             text(label),
@@ -361,9 +389,9 @@ impl Settings {
 
     fn selection<'a>(
         &self,
-        label: &'a str,
+        label: String,
         control: Element<'a, Message, Theme, iced_wgpu::Renderer>,
-        help: &'a str,
+        help: String,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         self.setting(label, control, help)
     }
@@ -371,10 +399,10 @@ impl Settings {
     fn toggle<'a>(
         &self,
         id: Id,
-        label: &'a str,
+        label: String,
         value: bool,
         changed: fn(bool) -> Message,
-        help: &'a str,
+        help: String,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         column![
             controls::action(
@@ -391,7 +419,7 @@ impl Settings {
     fn action<'a>(
         &self,
         id: Id,
-        label: &'a str,
+        label: String,
         message: Message,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         controls::action(id, button(text(label)).on_press(message.clone()), message)
@@ -437,43 +465,46 @@ fn control_order(display: DisplayBackend, decorations: bool, server: bool) -> Ve
     ids
 }
 
-fn audio_channel_label(value: &str) -> String {
-    match value {
-        "" => "Auto",
-        "stereo" => "Stereo",
-        "5.1" => "5.1 Surround",
-        "7.1" => "7.1 Surround",
-        value => value,
-    }
-    .to_owned()
+fn audio_channel_label(locale: &LanguageLoader, value: &str) -> String {
+    let label = match value {
+        "" => SettingsLabel::ChannelLayoutAuto,
+        "stereo" => SettingsLabel::ChannelLayoutStereo,
+        "5.1" => SettingsLabel::ChannelLayoutSurround51,
+        "7.1" => SettingsLabel::ChannelLayoutSurround71,
+        value => return value.to_owned(),
+    };
+    locale.settings_label(label)
 }
 
-fn log_level_label(value: &str) -> String {
-    match value {
-        "" => "Default (Info)",
-        "verbose" => "Verbose",
-        "debug" => "Debug",
-        "warn" => "Warning",
-        "error" => "Error",
-        value => value,
-    }
-    .to_owned()
+fn log_level_label(locale: &LanguageLoader, value: &str) -> String {
+    let label = match value {
+        "" => SettingsLabel::LogLevelDefault,
+        "verbose" => SettingsLabel::LogLevelVerbose,
+        "debug" => SettingsLabel::LogLevelDebug,
+        "warn" => SettingsLabel::LogLevelWarn,
+        "error" => SettingsLabel::LogLevelError,
+        value => return value.to_owned(),
+    };
+    locale.settings_label(label)
 }
 
-fn decoration_label(value: &Option<WindowDecorations>) -> String {
-    match value {
-        None => "Auto",
-        Some(WindowDecorations::Csd) => "In-app (client-side)",
-        Some(WindowDecorations::Server) => "System (server-side)",
-        Some(WindowDecorations::ServerThemed) => "System, themed (KDE)",
-    }
-    .to_owned()
+fn decoration_label(locale: &LanguageLoader, value: &Option<WindowDecorations>) -> String {
+    locale.settings_label(match value {
+        None => SettingsLabel::WindowDecorationsAuto,
+        Some(WindowDecorations::Csd) => SettingsLabel::WindowDecorationsCsd,
+        Some(WindowDecorations::Server) => SettingsLabel::WindowDecorationsServer,
+        Some(WindowDecorations::ServerThemed) => SettingsLabel::WindowDecorationsServerThemed,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use jfn_platform_abi::{DisplayBackend, WindowDecorations};
+
+    fn en() -> LanguageLoader {
+        LanguageLoader::new(&["en".parse().unwrap()]).unwrap()
+    }
 
     #[test]
     fn unset_hwdec_shows_the_mode_mpv_is_given() {
@@ -512,7 +543,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            choices.iter().map(decoration_label).collect::<Vec<_>>(),
+            choices
+                .iter()
+                .map(|choice| decoration_label(&en(), choice))
+                .collect::<Vec<_>>(),
             [
                 "Auto",
                 "In-app (client-side)",
@@ -544,9 +578,10 @@ mod tests {
 
     #[test]
     fn labels_and_empty_audio_focus_target_are_stable() {
-        assert_eq!(audio_channel_label(""), "Auto");
-        assert_eq!(audio_channel_label("5.1"), "5.1 Surround");
-        assert_eq!(log_level_label(""), "Default (Info)");
+        let en = en();
+        assert_eq!(audio_channel_label(&en, ""), "Auto");
+        assert_eq!(audio_channel_label(&en, "5.1"), "5.1 Surround");
+        assert_eq!(log_level_label(&en, ""), "Default (Info)");
         let settings = Settings::testing();
         assert!(settings.audio_passthrough.is_empty());
         assert_eq!(settings.focus_target(), Some(AUDIO_PASSTHROUGH_FIELD));
@@ -554,8 +589,9 @@ mod tests {
 
     #[test]
     fn section_headings_are_the_six_required_peers_in_order() {
+        let en = en();
         assert_eq!(
-            SECTION_TITLES,
+            SECTION_TITLES.map(|title| en.settings_label(title)),
             [
                 "Playback",
                 "Audio",
@@ -613,8 +649,7 @@ mod tests {
 
     #[test]
     fn display_copy_and_explicit_dismissal_are_stable() {
-        assert_eq!(TITLE, "Settings");
-        assert_eq!(CLOSE_LABEL, "Close Settings");
+        assert_eq!(en().settings_label(SettingsLabel::Title), "Settings");
         assert_eq!(Settings::testing().dismiss(), Outcome::Dismiss);
     }
 }

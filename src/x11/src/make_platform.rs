@@ -42,6 +42,7 @@ impl Platform for X11Platform {
         &self,
         _access: &jfn_platform_abi::LifecycleAccess,
         _mpv: *mut c_void,
+        _app: std::sync::Arc<jfn_platform_abi::App>,
     ) -> Result<(), jfn_platform_abi::PlatformInitError> {
         crate::lifecycle::init()
     }

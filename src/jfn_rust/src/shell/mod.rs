@@ -16,7 +16,6 @@ pub mod field;
 pub mod fields;
 mod fonts;
 pub mod key;
-pub mod lang;
 pub mod logo;
 pub mod menu;
 pub mod metadata;
@@ -30,18 +29,13 @@ pub mod state;
 pub mod theme;
 mod work_queue;
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::{Condvar, Mutex};
 
+use crate::app_menu::MenuManager;
 use actor::{Actor, Channel, Work};
-use jfn_platform_abi::{Plane, SurfaceHandle, SurfaceSize, Visibility};
-
-/// Application policy injected by the process composition root.
-#[derive(Clone, Copy)]
-pub struct ApplicationActions {
-    pub open_menu: fn(jfn_platform_abi::LogicalPoint, bool),
-}
+use jfn_platform_abi::{App, Plane, SurfaceHandle, SurfaceSize, Visibility};
 
 /// Owns its surface and actor. Drop requests a bounded stop. Unconfirmed
 /// termination pins the platform lease instead of allowing native destruction.
@@ -141,10 +135,11 @@ pub(crate) fn publish_no_overlay() {
 /// The returned readiness receiver reports renderer startup independently of
 /// surface and thread acquisition. The application chooses its failure policy.
 /// Must run after `Platform::init` and before `CefInitialize`.
-pub fn shell_start(
+pub(crate) fn shell_start(
     platform: &jfn_platform_abi::PlatformRuntime,
     metadata: metadata::ApplicationMetadata,
-    actions: ApplicationActions,
+    app: Arc<App>,
+    menu: Arc<MenuManager>,
 ) -> Result<(Shell, Readiness), StartError> {
     static CLAIMED: OnceLock<()> = OnceLock::new();
     CLAIMED
@@ -180,7 +175,8 @@ pub fn shell_start(
         surface,
         CHANNEL.get_or_init(Channel::new),
         metadata,
-        actions,
+        app,
+        menu,
         platform.lease(),
         ready_tx,
     )?);
@@ -362,18 +358,6 @@ fn signal_fonts_ready(result: Result<(), FontWarmupError>) {
     ready.notify_all();
 }
 
-/// Opens the combined overlay on its About tab. Installed as
-/// [`jfn_platform_abi::set_about_handler`].
-pub fn shell_open_about() {
-    post(Work::OpenAbout);
-}
-
-/// Opens client settings. Work posted before the render thread starts remains
-/// queued in the process-wide shell channel.
-pub fn shell_open_client_settings() {
-    post(Work::OpenClientSettings);
-}
-
 const FONT: &[u8] = include_bytes!("assets/NotoSans-Regular.ttf");
 
 /// Posts `work` to the render actor. Never drops it: an actor that has not
@@ -382,6 +366,10 @@ pub(crate) fn post(work: Work) {
     if !CLOSED.load(std::sync::atomic::Ordering::Acquire) {
         CHANNEL.get_or_init(Channel::new).post(work);
     }
+}
+
+pub(crate) fn shell_sender() -> work_queue::WorkSender {
+    CHANNEL.get_or_init(Channel::new).sender()
 }
 
 /// Subscribed into the refresh report at [`shell_start`]; wakes the pass, which

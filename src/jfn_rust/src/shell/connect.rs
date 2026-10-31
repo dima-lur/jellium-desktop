@@ -12,10 +12,11 @@ use iced_core::widget::Id;
 use iced_core::{Alignment, Color, Element, Length, Padding};
 use iced_widget::{button, column, container, image, text};
 
+use jfn_platform_abi::lang::{Label, LanguageLoader};
+
 use crate::connection::{FADE, Screen};
 
 use crate::shell::actor::Deadline;
-use crate::shell::lang::strings;
 use crate::shell::theme::{self, Theme};
 
 pub const URL_FIELD: Id = Id::new("shell-connect-url");
@@ -48,11 +49,12 @@ impl Connect {
     pub fn view<'a>(
         &'a self,
         screen: &'a Screen,
+        locale: &LanguageLoader,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         let body: Element<'a, Message, Theme, iced_wgpu::Renderer> = match screen {
-            Screen::Failed => self.failure_view(),
+            Screen::Failed => self.failure_view(locale),
             Screen::Working { .. } | Screen::Retiring { .. } => self.spinner_view(screen),
-            Screen::Form { url } => self.form_view(url),
+            Screen::Form { url } => self.form_view(url, locale),
             Screen::Gone => iced_widget::space::horizontal().into(),
         };
         container(body)
@@ -65,18 +67,22 @@ impl Connect {
             .into()
     }
 
-    fn form_view<'a>(&'a self, url: &'a str) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
+    fn form_view<'a>(
+        &'a self,
+        url: &'a str,
+        locale: &LanguageLoader,
+    ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
         let submit = (!url.trim().is_empty()).then_some(Message::Submit);
         column![
             image(crate::shell::logo::handle())
                 .width(Length::Fixed(crate::shell::logo::CONNECT_WIDTH)),
-            text(strings().server_host).size(24),
-            crate::shell::field::field(URL_FIELD, strings().server_host_help, url)
+            text(locale.label(Label::ServerHost)).size(24),
+            crate::shell::field::field(URL_FIELD, locale.label(Label::ServerHostHelp), url)
                 .on_input(Message::UrlEdited)
                 .on_submit(Message::Submit)
                 .padding(Padding::from([10, 13]))
                 .size(16),
-            button(text(strings().connect).center())
+            button(text(locale.label(Label::Submit)).center())
                 .on_press_maybe(submit)
                 .width(Length::Fill)
                 .padding(Padding::from([12, 24])),
@@ -105,13 +111,16 @@ impl Connect {
         .into()
     }
 
-    fn failure_view(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+    fn failure_view(
+        &self,
+        locale: &LanguageLoader,
+    ) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         column![
-            text(strings().connection_failure).size(24),
-            container(text(strings().unable_to_connect).center())
+            text(locale.label(Label::Failure)).size(24),
+            container(text(locale.label(Label::UnableToConnect)).center())
                 .width(Length::Fixed(350.0))
                 .padding(Padding::from([0, 24])),
-            button(text(strings().got_it).center()).on_press(Message::DismissFailure),
+            button(text(locale.label(Label::GotIt)).center()).on_press(Message::DismissFailure),
         ]
         .spacing(32)
         .align_x(Alignment::Center)

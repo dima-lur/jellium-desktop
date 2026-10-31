@@ -4,6 +4,7 @@ use iced_core::widget::Id;
 use iced_core::widget::operation::scrollable::AbsoluteOffset;
 use iced_core::{Alignment, Color, Element, Length, Padding};
 use iced_widget::{Container, button, column, container, mouse_area, row, text};
+use jfn_platform_abi::lang::{LanguageLoader, SettingsLabel};
 
 use crate::shell::about::About;
 use crate::shell::controls;
@@ -149,17 +150,20 @@ impl SettingsOverlay {
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+    pub fn view(
+        &self,
+        locale: &LanguageLoader,
+    ) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         let settings_tab = controls::tab(
             SETTINGS_TAB_CONTROL,
-            button(text(settings::TITLE))
+            button(text(locale.settings_label(SettingsLabel::Title)))
                 .on_press(Message::Select(Tab::Settings))
                 .class(tab_class(self.active == Tab::Settings)),
             Message::Select(Tab::Settings),
         );
         let about_tab = controls::tab(
             ABOUT_TAB_CONTROL,
-            button(text("About"))
+            button(text(locale.settings_label(SettingsLabel::About)))
                 .on_press(Message::Select(Tab::About))
                 .class(tab_class(self.active == Tab::About)),
             Message::Select(Tab::About),
@@ -180,7 +184,7 @@ impl SettingsOverlay {
         .align_y(Alignment::Center)
         .spacing(12);
         let content = match self.active {
-            Tab::Settings => self.settings.view().map(Message::Settings),
+            Tab::Settings => self.settings.view(locale).map(Message::Settings),
             Tab::About => self.about.view().map(Message::About),
         };
         let body = column![header, content].spacing(18);

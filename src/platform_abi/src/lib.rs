@@ -16,11 +16,14 @@ use std::ffi::{c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+pub mod app;
 pub mod blocking;
 pub use blocking::BlockingError;
 pub mod cef_host;
+pub mod context_menu;
 pub mod geometry;
 pub mod instance;
+pub mod lang;
 pub mod media_sink;
 pub mod menu;
 pub mod mpv_host;
@@ -39,7 +42,9 @@ pub mod visibility;
 pub mod window_owner;
 pub mod window_source;
 
+pub use app::{App, AppMsg, MenuSerial};
 pub use cef_host::CefHost;
+pub use context_menu::{ChannelValue, ContextMenuBuilder, Item, MenuBuilder, MessageSender};
 pub use geometry::{
     BootGeometry, COVERED_SCALES, LogicalPoint, LogicalSize, PhysicalPoint, PhysicalSize, Scale,
     SurfaceSize, WindowExtent, WindowGeometry, WindowPos,
@@ -49,9 +54,8 @@ pub use jfn_gpu_paint::DamageRect as JfnRect;
 pub use jfn_gpu_paint::WindowTarget;
 pub use media_sink::MediaSink;
 pub use menu::{
-    Generation, MENU_DISMISSED, MenuClose, MenuDelivery, MenuHost, MenuItem, MenuKind, MenuMetrics,
-    MenuPaint, MenuPlacement, MenuRequest, MenuScript, MenuSelection, PopupSurface,
-    menu_has_selectable, menu_initial_row, menu_scripts,
+    Generation, MENU_DISMISSED, MenuClose, MenuDelivery, MenuHost, MenuKind, MenuMetrics,
+    MenuPaint, MenuPlacement, MenuRequest, MenuScript, PopupSurface, menu_scripts,
 };
 pub use mpv_host::{DefaultMpvHost, MpvHost, VoWait};
 pub use osr_popup::{NoOsrPopup, OsrPopupSurface};
@@ -466,7 +470,12 @@ pub trait Platform: Send + Sync {
 
     fn early_init(&self);
     /// `mpv` is the opaque libmpv `mpv_handle` — a raw C handle, stays raw.
-    fn init(&self, access: &LifecycleAccess, mpv: *mut c_void) -> Result<(), PlatformInitError>;
+    fn init(
+        &self,
+        access: &LifecycleAccess,
+        mpv: *mut c_void,
+        app: std::sync::Arc<App>,
+    ) -> Result<(), PlatformInitError>;
     fn cleanup(&self, access: &LifecycleAccess);
     fn post_window_cleanup(&self, access: &LifecycleAccess);
 
@@ -712,34 +721,6 @@ pub fn resolve_window_decorations(configured: Option<WindowDecorations>) -> Wind
 /// Titlebar height, logical pixels.
 pub const TITLEBAR_LOGICAL_HEIGHT: c_int = 32;
 
-static ABOUT_HANDLER: OnceLock<fn()> = OnceLock::new();
-
-/// Register the callback that raises the about panel. Single listener,
-/// installed once at boot.
-pub fn set_about_handler(f: fn()) {
-    let _ = ABOUT_HANDLER.set(f);
-}
-
-pub fn request_about() {
-    if let Some(f) = ABOUT_HANDLER.get() {
-        f();
-    }
-}
-
-static CLIENT_SETTINGS_HANDLER: OnceLock<fn()> = OnceLock::new();
-
-/// Register the callback that raises client settings. Single listener,
-/// installed once at boot.
-pub fn set_client_settings_handler(f: fn()) {
-    let _ = CLIENT_SETTINGS_HANDLER.set(f);
-}
-
-pub fn request_client_settings() {
-    if let Some(f) = CLIENT_SETTINGS_HANDLER.get() {
-        f();
-    }
-}
-
 static DECORATIONS_LISTENERS: std::sync::LazyLock<subscriptions::Subscribers> =
     std::sync::LazyLock::new(subscriptions::Subscribers::new);
 pub use subscriptions::Subscription as DecorationsSubscription;
@@ -918,13 +899,14 @@ impl PreparedPlatform {
     pub fn initialize(
         self,
         mpv: *mut c_void,
+        app: std::sync::Arc<App>,
     ) -> Result<PlatformRuntime, (PlatformInitError, Self)> {
         let access = LifecycleAccess { _private: () };
         // Keep rollback authority even when a backend unwinds after acquiring
         // resources. The application still owns mpv and must terminate it
         // between backend detachment and post-window cleanup.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.platform.init(&access, mpv)
+            self.platform.init(&access, mpv, app)
         }));
         match result {
             Ok(Ok(())) => {}

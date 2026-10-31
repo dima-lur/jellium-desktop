@@ -86,8 +86,6 @@ impl Inner {
             jfn_logging::Level::Debug,
             &format!("OnBeforeClose name={}", self.name_str()),
         );
-        // A browser dying mid-menu must not strand the session slot.
-        self.menu_reset();
         self.on_deactivated();
 
         // The callback itself owns this Arc. A successful request transfers a

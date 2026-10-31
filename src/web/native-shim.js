@@ -476,18 +476,18 @@
             css += '\n.MuiDrawer-paper { padding-top: var(--mac-titlebar-height) !important; }';
             // Dialog headers (e.g. client settings modal)
             css += '\n.formDialogHeader { padding-top: var(--mac-titlebar-height) !important; }';
-
-            // Hide/show traffic lights with the video OSD.
-            // jellyfin-web uses an internal Events.trigger() system (obj._callbacks),
-            // not DOM events. Register directly on that callback structure.
-            document._callbacks = document._callbacks || {};
-            document._callbacks['SHOW_VIDEO_OSD'] = document._callbacks['SHOW_VIDEO_OSD'] || [];
-            document._callbacks['SHOW_VIDEO_OSD'].push((_e, visible) => {
-                if (window.jmpNative && window.jmpNative.setOsdVisible) {
-                    window.jmpNative.setOsdVisible(!!visible);
-                }
-            });
         }
+
+        // Hide/show native window chrome with the video OSD.
+        // jellyfin-web uses an internal Events.trigger() system (obj._callbacks),
+        // not DOM events. Register directly on that callback structure.
+        document._callbacks = document._callbacks || {};
+        document._callbacks['SHOW_VIDEO_OSD'] = document._callbacks['SHOW_VIDEO_OSD'] || [];
+        document._callbacks['SHOW_VIDEO_OSD'].push((_e, visible) => {
+            if (window.jmpNative && window.jmpNative.setOsdVisible) {
+                window.jmpNative.setOsdVisible(!!visible);
+            }
+        });
 
         style.textContent = css;
         document.head.appendChild(style);

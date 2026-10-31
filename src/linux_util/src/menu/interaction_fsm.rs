@@ -1,4 +1,4 @@
-use jfn_platform_abi::MenuItem;
+use jfn_platform_abi::Item;
 
 use crate::menu::render::Layout;
 
@@ -32,7 +32,7 @@ pub enum MenuEvent {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MenuEffect {
     Redraw,
-    Close(i32),
+    Close(Option<usize>),
 }
 
 /// Without a layout only `Dismiss`, Escape and Tab have an effect.
@@ -40,10 +40,10 @@ pub fn step(
     s: &mut MenuState,
     ev: &MenuEvent,
     layout: Option<&Layout>,
-    items: &[MenuItem],
+    groups: &[Vec<Item>],
 ) -> Vec<MenuEffect> {
     match *ev {
-        MenuEvent::Dismiss => vec![MenuEffect::Close(-1)],
+        MenuEvent::Dismiss => vec![MenuEffect::Close(None)],
         MenuEvent::Motion { x, y } => {
             let Some(layout) = layout else {
                 return vec![];
@@ -61,19 +61,20 @@ pub fn step(
                 return vec![];
             };
             if !layout.contains(x, y) {
-                return vec![MenuEffect::Close(-1)];
+                return vec![MenuEffect::Close(None)];
             }
-            // In-bounds press on a separator/disabled row or the padding band is
-            // ignored, not a dismiss.
-            match layout.row_at(x, y).and_then(|idx| items.get(idx)) {
-                Some(item) => vec![MenuEffect::Close(item.id)],
+            match layout
+                .row_at(x, y)
+                .filter(|&row| groups.iter().flatten().nth(row).is_some())
+            {
+                Some(row) => vec![MenuEffect::Close(Some(row))],
                 None => vec![],
             }
         }
         MenuEvent::Key(keysym) => match keysym {
-            XK_ESCAPE | XK_TAB => vec![MenuEffect::Close(-1)],
-            XK_RETURN | XK_KP_ENTER | XK_SPACE => match selectable(items, s.active) {
-                Some(id) => vec![MenuEffect::Close(id)],
+            XK_ESCAPE | XK_TAB => vec![MenuEffect::Close(None)],
+            XK_RETURN | XK_KP_ENTER | XK_SPACE => match selectable(groups, s.active) {
+                Some(row) => vec![MenuEffect::Close(Some(row))],
                 None => vec![],
             },
             XK_DOWN | XK_UP => {
@@ -93,14 +94,10 @@ pub fn step(
     }
 }
 
-/// The id of `active` when it names an item that exists, is enabled and is not
-/// a separator.
-fn selectable(items: &[MenuItem], active: i32) -> Option<i32> {
+fn selectable(groups: &[Vec<Item>], active: i32) -> Option<usize> {
     usize::try_from(active)
         .ok()
-        .and_then(|i| items.get(i))
-        .filter(|i| i.enabled && !i.separator)
-        .map(|i| i.id)
+        .filter(|&row| groups.iter().flatten().nth(row).is_some_and(|i| i.enabled))
 }
 
 #[cfg(test)]
@@ -108,59 +105,39 @@ mod tests {
     use super::*;
     use crate::menu::render::Row;
 
-    fn item(id: i32) -> MenuItem {
-        MenuItem {
-            id,
+    fn item(id: i32) -> Item {
+        Item {
             label: String::new(),
             enabled: true,
-            separator: false,
+            value: jfn_platform_abi::ChannelValue::new(std::sync::mpsc::channel().0, id),
         }
     }
 
-    fn sep() -> MenuItem {
-        MenuItem {
-            id: 0,
+    fn disabled(id: i32) -> Item {
+        Item {
             label: String::new(),
             enabled: false,
-            separator: true,
+            value: jfn_platform_abi::ChannelValue::new(std::sync::mpsc::channel().0, id),
         }
     }
 
-    fn disabled(id: i32) -> MenuItem {
-        MenuItem {
-            id,
-            label: String::new(),
-            enabled: false,
-            separator: false,
-        }
-    }
-
-    fn fixture() -> (Vec<MenuItem>, Layout) {
-        let items = vec![item(10), sep(), item(20)];
+    fn fixture() -> (Vec<Vec<Item>>, Layout) {
+        let items = vec![vec![item(10)], vec![item(20)]];
         let rows = vec![
             Row {
                 item: 0,
                 y: 4,
                 h: 10,
-                separator: false,
                 enabled: true,
             },
             Row {
                 item: 1,
-                y: 14,
-                h: 6,
-                separator: true,
-                enabled: false,
-            },
-            Row {
-                item: 2,
                 y: 20,
                 h: 10,
-                separator: false,
                 enabled: true,
             },
         ];
-        let layout = Layout::for_test(100, 34, rows, vec![0, 2]);
+        let layout = Layout::for_test(100, 34, rows, vec![0, 1]);
         (items, layout)
     }
 
@@ -186,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn motion_onto_separator_clears() {
+    fn motion_onto_group_line_clears() {
         let (active, e) = run(0, MenuEvent::Motion { x: 50, y: 15 });
         assert_eq!(active, -1);
         assert_eq!(e, vec![MenuEffect::Redraw]);
@@ -202,23 +179,23 @@ mod tests {
     #[test]
     fn press_outside_dismisses() {
         let (_, e) = run(0, MenuEvent::Press { x: 9999, y: 0 });
-        assert_eq!(e, vec![MenuEffect::Close(-1)]);
+        assert_eq!(e, vec![MenuEffect::Close(None)]);
     }
 
     #[test]
     fn dismiss_closes_cancelled() {
         let (_, e) = run(1, MenuEvent::Dismiss);
-        assert_eq!(e, vec![MenuEffect::Close(-1)]);
+        assert_eq!(e, vec![MenuEffect::Close(None)]);
     }
 
     #[test]
     fn press_on_row_closes_with_id() {
         let (_, e) = run(-1, MenuEvent::Press { x: 50, y: 25 });
-        assert_eq!(e, vec![MenuEffect::Close(20)]);
+        assert_eq!(e, vec![MenuEffect::Close(Some(1))]);
     }
 
     #[test]
-    fn press_on_separator_ignored() {
+    fn press_on_group_line_ignored() {
         let (_, e) = run(0, MenuEvent::Press { x: 50, y: 15 });
         assert_eq!(e, vec![]);
     }
@@ -231,12 +208,11 @@ mod tests {
 
     #[test]
     fn press_on_disabled_ignored() {
-        let items = vec![disabled(10)];
+        let items = vec![vec![disabled(10)]];
         let rows = vec![Row {
             item: 0,
             y: 4,
             h: 10,
-            separator: false,
             enabled: false,
         }];
         let layout = Layout::for_test(100, 18, rows, vec![]);
@@ -253,19 +229,22 @@ mod tests {
     #[test]
     fn key_escape_and_tab_dismiss() {
         assert_eq!(
-            run(2, MenuEvent::Key(XK_ESCAPE)).1,
-            vec![MenuEffect::Close(-1)]
+            run(1, MenuEvent::Key(XK_ESCAPE)).1,
+            vec![MenuEffect::Close(None)]
         );
         assert_eq!(
-            run(2, MenuEvent::Key(XK_TAB)).1,
-            vec![MenuEffect::Close(-1)]
+            run(1, MenuEvent::Key(XK_TAB)).1,
+            vec![MenuEffect::Close(None)]
         );
     }
 
     #[test]
     fn key_select_with_active() {
         for k in [XK_RETURN, XK_KP_ENTER, XK_SPACE] {
-            assert_eq!(run(2, MenuEvent::Key(k)).1, vec![MenuEffect::Close(20)]);
+            assert_eq!(
+                run(1, MenuEvent::Key(k)).1,
+                vec![MenuEffect::Close(Some(1))]
+            );
         }
     }
 
@@ -284,25 +263,24 @@ mod tests {
     #[test]
     fn key_up_from_none_last() {
         let (active, e) = run(-1, MenuEvent::Key(XK_UP));
-        assert_eq!(active, 2);
+        assert_eq!(active, 1);
         assert_eq!(e, vec![MenuEffect::Redraw]);
     }
 
     #[test]
     fn key_down_wraps() {
-        let (active, e) = run(2, MenuEvent::Key(XK_DOWN));
+        let (active, e) = run(1, MenuEvent::Key(XK_DOWN));
         assert_eq!(active, 0);
         assert_eq!(e, vec![MenuEffect::Redraw]);
     }
 
     #[test]
     fn key_down_single_item_noop() {
-        let items = vec![item(10)];
+        let items = vec![vec![item(10)]];
         let rows = vec![Row {
             item: 0,
             y: 4,
             h: 10,
-            separator: false,
             enabled: true,
         }];
         let layout = Layout::for_test(100, 18, rows, vec![0]);
@@ -326,14 +304,14 @@ mod tests {
 
     #[test]
     fn escape_and_dismiss_close_without_a_layout() {
-        assert_eq!(bare(0, MenuEvent::Dismiss).1, vec![MenuEffect::Close(-1)]);
+        assert_eq!(bare(0, MenuEvent::Dismiss).1, vec![MenuEffect::Close(None)]);
         assert_eq!(
             bare(0, MenuEvent::Key(XK_ESCAPE)).1,
-            vec![MenuEffect::Close(-1)]
+            vec![MenuEffect::Close(None)]
         );
         assert_eq!(
             bare(0, MenuEvent::Key(XK_TAB)).1,
-            vec![MenuEffect::Close(-1)]
+            vec![MenuEffect::Close(None)]
         );
     }
 
@@ -359,7 +337,7 @@ mod tests {
 
     #[test]
     fn enter_on_a_disabled_row_is_ignored() {
-        let items = vec![disabled(10), sep()];
+        let items = vec![vec![disabled(10)]];
         let layout = Layout::for_test(100, 18, vec![], vec![]);
         for active in [0, 1] {
             let mut s = MenuState { active };

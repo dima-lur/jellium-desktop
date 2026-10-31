@@ -48,19 +48,15 @@ struct MediaMetadata {
 static WAS_FULLSCREEN_BEFORE_OSD: Mutex<bool> = Mutex::new(false);
 
 /// Install jellyfin-web's handlers before its client is submitted to CEF.
-pub(crate) fn install(client: &Arc<Inner>, application_menu: crate::ApplicationMenu) {
+pub(crate) fn install(client: &Arc<Inner>) {
     client.set_created_callback(Some(Arc::new(|| {
         // The router owns this browser's CEF focus: it is live here, and a
         // focus published before it existed reached nothing.
         jfn_input::web_became_live();
     })));
 
-    client.set_message_handler(Some(Box::new(handle_message)));
-
-    client.set_context_menu_builder(Some(crate::app_menu::build_closure(application_menu.items)));
-    client.set_context_menu_dispatcher(Some(crate::app_menu::dispatch_closure(
-        application_menu.on_selected,
-    )));
+    let app = Arc::clone(&client.app);
+    client.set_message_handler(Some(Box::new(move |message| handle_message(&app, message))));
 }
 
 fn parse_metadata_json(json: &str) -> MediaMetadata {
@@ -213,11 +209,11 @@ fn with_args(args: Option<&ListValue>, f: impl FnOnce(&ListValue)) -> bool {
     true
 }
 
-fn handle_message(message: BrowserMessage) -> bool {
+fn handle_message(app: &jfn_platform_abi::App, message: BrowserMessage) -> bool {
     let args = message.args();
 
     if message.name() == "openClientSettings" {
-        jfn_platform_abi::request_client_settings();
+        app.open_client_settings();
         return true;
     }
 

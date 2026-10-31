@@ -5,9 +5,8 @@ use std::thread::JoinHandle;
 
 use jfn_mailbox::Mailbox;
 use jfn_platform_abi::{
-    Generation, LogicalPoint, MENU_DISMISSED, MenuClose, MenuHost, MenuItem, MenuMetrics,
-    MenuPaint, MenuPlacement, MenuRequest, MenuSelection, PhysicalSize, PopupSurface, WindowExtent,
-    menu_has_selectable, menu_initial_row,
+    Generation, Item, LogicalPoint, MENU_DISMISSED, MenuClose, MenuHost, MenuMetrics, MenuPaint,
+    MenuPlacement, MenuRequest, PhysicalSize, PopupSurface, WindowExtent,
 };
 use parking_lot::Mutex;
 
@@ -85,17 +84,17 @@ impl SoftwareMenu {
     }
 
     fn open_impl(&self, req: MenuRequest, trigger: Option<u32>) {
-        if !self.render_thread_alive() || !menu_has_selectable(&req.items) {
+        if !self.render_thread_alive() || !req.groups.iter().flatten().any(|item| item.enabled) {
             self.emitter
                 .update(|s| close_current(s, MenuClose::Speculative));
-            req.on_selected.resolve(MENU_DISMISSED);
+            drop(req);
             return;
         }
         self.emitter.update(|s| {
             let resolve = s
                 .menu
                 .as_mut()
-                .and_then(|m| m.on_selected.take())
+                .and_then(|m| m.request.take())
                 .map(Resolve::dismissed);
             if let Some(serial) = trigger {
                 s.active = false;
@@ -115,20 +114,32 @@ impl SoftwareMenu {
                     s,
                     SurfaceOp::Arm {
                         generation,
-                        anchor: LogicalPoint { x: req.x, y: req.y },
+                        anchor: req.anchor,
                         serial,
                     },
                 );
             }
             s.menu = Some(Menu {
                 fsm: FsmState {
-                    active: menu_initial_row(&req.items, req.initial),
+                    active: req
+                        .current()
+                        .filter(|&row| {
+                            req.groups
+                                .iter()
+                                .flatten()
+                                .nth(row)
+                                .is_some_and(|item| item.enabled)
+                        })
+                        .and_then(|row| i32::try_from(row).ok())
+                        .unwrap_or(MENU_DISMISSED),
                 },
-                items: Arc::new(req.items),
+                items: Arc::clone(&req.groups),
                 laid: None,
-                width: req.width,
-                on_selected: Some(req.on_selected),
-                anchor: LogicalPoint { x: req.x, y: req.y },
+                width: req
+                    .width
+                    .map_or(0, |w| c_int::try_from(w.get()).unwrap_or(c_int::MAX)),
+                anchor: req.anchor,
+                request: Some(req),
             });
             if s.phase == Phase::Idle {
                 let generation = next_generation(s);
@@ -380,22 +391,25 @@ impl Emitter {
     }
 }
 
-/// A selection to settle once the state lock is released.
 struct Resolve {
-    selection: MenuSelection,
-    id: c_int,
+    request: MenuRequest,
+    row: Option<usize>,
 }
 
 impl Resolve {
-    fn dismissed(selection: MenuSelection) -> Resolve {
-        Resolve {
-            selection,
-            id: MENU_DISMISSED,
-        }
+    fn dismissed(request: MenuRequest) -> Resolve {
+        Resolve { request, row: None }
     }
 
     fn fire(self) {
-        self.selection.resolve(self.id);
+        match self.row {
+            Some(row) => {
+                if let Err(err) = self.request.select(row) {
+                    tracing::error!(target: "platform", "menu selection failed: {err}");
+                }
+            }
+            None => drop(self.request),
+        }
     }
 }
 
@@ -432,13 +446,13 @@ struct Laid {
 }
 
 struct Menu {
-    items: Arc<Vec<MenuItem>>,
+    items: Arc<Vec<Vec<Item>>>,
     fsm: FsmState,
     /// `None` until [`on_layout`] delivers the surface's metrics.
     laid: Option<Laid>,
     /// Desired logical width; `<= 0` is content-sized.
     width: c_int,
-    on_selected: Option<MenuSelection>,
+    request: Option<MenuRequest>,
     /// Anchor in logical (view) coordinates.
     anchor: LogicalPoint,
 }
@@ -503,12 +517,12 @@ fn queue(state: &mut MenuState, op: SurfaceOp) {
 enum Job {
     Shape {
         generation: Generation,
-        items: Arc<Vec<MenuItem>>,
+        items: Arc<Vec<Vec<Item>>>,
         width: i32,
     },
     Paint {
         generation: Generation,
-        items: Arc<Vec<MenuItem>>,
+        items: Arc<Vec<Vec<Item>>>,
         layout: Arc<Layout>,
         active: i32,
     },
@@ -597,11 +611,7 @@ fn buffer_point(menu: &Menu, at: MenuPoint) -> Option<(c_int, c_int)> {
 }
 
 fn row_height(laid: &Laid) -> c_int {
-    laid.layout
-        .rows
-        .iter()
-        .find(|r| !r.separator)
-        .map_or(1, |r| r.h.max(1))
+    laid.layout.rows.first().map_or(1, |r| r.h.max(1))
 }
 
 fn scroll_active_into_view(laid: &mut Laid, active: c_int) {
@@ -735,9 +745,9 @@ fn step(state: &mut MenuState, ev: MenuEvent) -> Option<Resolve> {
     for effect in effects {
         match effect {
             MenuEffect::Redraw => request_paint(state),
-            MenuEffect::Close(id) => {
+            MenuEffect::Close(row) => {
                 let generation = state.generation;
-                let resolve = clear_menu(state).map(|selection| Resolve { selection, id });
+                let resolve = clear_menu(state).map(|request| Resolve { request, row });
                 if let Some(generation) = generation {
                     queue(
                         state,
@@ -755,7 +765,6 @@ fn step(state: &mut MenuState, ev: MenuEvent) -> Option<Resolve> {
 }
 
 /// Clears the session, queues the surface teardown and returns the pending
-/// selection, resolved as [`MENU_DISMISSED`].
 fn close_current(state: &mut MenuState, reason: MenuClose) -> Option<Resolve> {
     let generation = state.generation;
     let resolve = clear_menu(state).map(Resolve::dismissed);
@@ -765,12 +774,12 @@ fn close_current(state: &mut MenuState, reason: MenuClose) -> Option<Resolve> {
     resolve
 }
 
-fn clear_menu(state: &mut MenuState) -> Option<MenuSelection> {
+fn clear_menu(state: &mut MenuState) -> Option<MenuRequest> {
     state.active = false;
     state.phase = Phase::Idle;
     state.generation = None;
     state.job = None;
-    state.menu.take().and_then(|mut m| m.on_selected.take())
+    state.menu.take().and_then(|mut m| m.request.take())
 }
 
 fn next_generation(state: &mut MenuState) -> Generation {
@@ -948,28 +957,29 @@ mod tests {
         menu_on(Arc::new(NoopSurface), alive)
     }
 
-    fn request_row(items: Vec<MenuItem>, initial: c_int) -> (MenuRequest, Receiver<c_int>) {
+    fn request_row(items: Vec<Item>, initial: Option<usize>) -> (MenuRequest, Receiver<c_int>) {
         let (tx, rx): (Sender<c_int>, Receiver<c_int>) = channel();
-        let req = MenuRequest {
-            items,
-            x: 0,
-            y: 0,
-            width: 0,
-            initial,
-            on_selected: MenuSelection::new(move |id| {
-                let _ = tx.send(id);
-            }),
-        };
-        (req, rx)
+        let (app_tx, _app_rx) = channel::<jfn_platform_abi::AppMsg>();
+        let app = jfn_platform_abi::App::new(
+            app_tx,
+            || jfn_platform_abi::MenuSerial::new(0),
+            jfn_platform_abi::lang::detect().unwrap(),
+        );
+        let builder = app
+            .new_menu(LogicalPoint { x: 0, y: 0 })
+            .add_items(items)
+            .current(initial)
+            .add_on_closed(jfn_platform_abi::ChannelValue::new(tx, MENU_DISMISSED));
+        (MenuRequest::from(builder), rx)
     }
 
-    fn request(items: Vec<MenuItem>) -> (MenuRequest, Receiver<c_int>) {
-        request_row(items, MENU_DISMISSED)
+    fn request(items: Vec<Item>) -> (MenuRequest, Receiver<c_int>) {
+        request_row(items, None)
     }
 
     fn menu_at(scale: Scale, layout: Option<Layout>) -> Menu {
         Menu {
-            items: Arc::new(vec![selectable_item()]),
+            items: Arc::new(vec![vec![selectable_item()]]),
             fsm: FsmState::default(),
             laid: layout.map(|layout| Laid {
                 layout: Arc::new(layout),
@@ -982,17 +992,16 @@ mod tests {
                 scroll: 0,
             }),
             width: 0,
-            on_selected: None,
+            request: None,
             anchor: LogicalPoint { x: 0, y: 0 },
         }
     }
 
-    fn selectable_item() -> MenuItem {
-        MenuItem {
-            id: 1,
+    fn selectable_item() -> Item {
+        Item {
             label: "One".into(),
             enabled: true,
-            separator: false,
+            value: jfn_platform_abi::ChannelValue::new(channel().0, ()),
         }
     }
 
@@ -1102,11 +1111,10 @@ mod tests {
     #[test]
     fn a_menu_with_no_selectable_item_is_refused_and_resolved() {
         let menu = menu_with_thread(true);
-        let (req, rx) = request(vec![MenuItem {
-            id: 0,
+        let (req, rx) = request(vec![Item {
             label: String::new(),
             enabled: false,
-            separator: true,
+            value: jfn_platform_abi::ChannelValue::new(channel().0, ()),
         }]);
         menu.open(req);
         assert_eq!(rx.try_recv(), Ok(MENU_DISMISSED));
@@ -1169,7 +1177,7 @@ mod tests {
     #[test]
     fn an_out_of_range_initial_row_highlights_nothing() {
         let menu = menu_with_thread(true);
-        let (req, _rx) = request_row(vec![selectable_item()], 5);
+        let (req, _rx) = request_row(vec![selectable_item()], Some(5));
         menu.open(req);
         assert_eq!(
             menu.emitter

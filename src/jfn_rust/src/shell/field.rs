@@ -11,6 +11,7 @@
 //! than breaking the line.
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use iced_core::Renderer as _;
@@ -341,7 +342,7 @@ pub fn binding<Message>(backend: DisplayBackend, key_press: KeyPress) -> Option<
 /// A shell field. Every text field the shell overlay draws is one of these.
 pub struct Field<'a, Message> {
     id: Id,
-    placeholder: &'a str,
+    placeholder: Cow<'a, str>,
     value: &'a str,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Message>,
@@ -352,10 +353,14 @@ pub struct Field<'a, Message> {
 }
 
 /// Every shell field carries an [`Id`]; there is no unnamed one.
-pub fn field<'a, Message>(id: Id, placeholder: &'a str, value: &'a str) -> Field<'a, Message> {
+pub fn field<'a, Message>(
+    id: Id,
+    placeholder: impl Into<Cow<'a, str>>,
+    value: &'a str,
+) -> Field<'a, Message> {
     Field {
         id,
-        placeholder,
+        placeholder: placeholder.into(),
         value,
         on_input: None,
         on_submit: None,
@@ -407,9 +412,9 @@ impl<'a, Message: Clone + 'a> Field<'a, Message> {
     }
 
     /// The text the placeholder is drawn from, laid out to `bounds`.
-    fn placeholder_text(&self, renderer: &Renderer, bounds: Size) -> Text<&'a str, Font> {
+    fn placeholder_text(&self, renderer: &Renderer, bounds: Size) -> Text<&str, Font> {
         Text {
-            content: self.placeholder,
+            content: &self.placeholder,
             bounds,
             size: self.text_size(renderer),
             line_height: LineHeight::default(),

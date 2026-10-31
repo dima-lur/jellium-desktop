@@ -2,6 +2,14 @@
 #![allow(unused_variables, clippy::panic, clippy::unreachable)]
 use super::*;
 
+fn app() -> std::sync::Arc<App> {
+    std::sync::Arc::new(App::new(
+        std::sync::mpsc::channel::<AppMsg>().0,
+        || MenuSerial::new(0),
+        crate::lang::detect().unwrap(),
+    ))
+}
+
 #[derive(Clone, Copy)]
 enum Outcome {
     Success,
@@ -15,7 +23,12 @@ struct Backend {
 }
 
 impl Platform for Backend {
-    fn init(&self, _access: &LifecycleAccess, _mpv: *mut c_void) -> Result<(), PlatformInitError> {
+    fn init(
+        &self,
+        _access: &LifecycleAccess,
+        _mpv: *mut c_void,
+        _app: std::sync::Arc<App>,
+    ) -> Result<(), PlatformInitError> {
         self.events.lock().push("acquired host");
         match self.outcome {
             Outcome::Success => Ok(()),
@@ -171,7 +184,7 @@ fn partial_acquisition_failure_and_panic_preserve_ordered_rollback() {
     let _serial = TEST_PLATFORM.lock();
     for outcome in [Outcome::Failure, Outcome::Panic] {
         let (backend, prepared) = prepared(outcome);
-        let (error, prepared) = match prepared.initialize(std::ptr::null_mut()) {
+        let (error, prepared) = match prepared.initialize(std::ptr::null_mut(), app()) {
             Ok(_) => panic!("fault injection unexpectedly succeeded"),
             Err(failure) => failure,
         };
@@ -204,7 +217,7 @@ fn partial_acquisition_failure_and_panic_preserve_ordered_rollback() {
 fn busy_cleanup_returns_backend_and_window_owner_for_retry() {
     let _serial = TEST_PLATFORM.lock();
     let (backend, prepared) = prepared(Outcome::Success);
-    let runtime = match prepared.initialize(std::ptr::null_mut()) {
+    let runtime = match prepared.initialize(std::ptr::null_mut(), app()) {
         Ok(runtime) => runtime,
         Err(_) => panic!("successful backend initialization failed"),
     };
@@ -262,7 +275,7 @@ fn busy_cleanup_returns_backend_and_window_owner_for_retry() {
 fn cleanup_retires_admission_and_waits_for_an_inflight_callback() {
     let _serial = TEST_PLATFORM.lock();
     let (backend, prepared) = prepared(Outcome::Success);
-    let runtime = match prepared.initialize(std::ptr::null_mut()) {
+    let runtime = match prepared.initialize(std::ptr::null_mut(), app()) {
         Ok(runtime) => runtime,
         Err(_) => panic!("successful backend initialization failed"),
     };
@@ -316,7 +329,7 @@ fn cleanup_retires_admission_and_waits_for_an_inflight_callback() {
 fn failed_window_termination_retains_host_and_retry_skips_backend_detachment() {
     let _serial = TEST_PLATFORM.lock();
     let (backend, prepared) = prepared(Outcome::Success);
-    let runtime = match prepared.initialize(std::ptr::null_mut()) {
+    let runtime = match prepared.initialize(std::ptr::null_mut(), app()) {
         Ok(runtime) => runtime,
         Err(_) => panic!("successful backend initialization failed"),
     };

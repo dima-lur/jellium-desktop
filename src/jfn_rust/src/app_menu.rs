@@ -1,89 +1,49 @@
-//! Application menu policy, composed into the shell and CEF adapters at startup.
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jfn_platform_abi::{
-    LogicalPoint, MenuDelivery, MenuItem, MenuKind, MenuRequest, MenuSelection,
-};
+use jfn_platform_abi::{MenuBuilder, MenuDelivery, MenuKind, MenuRequest, MenuSerial};
+use parking_lot::Mutex;
 
-// CEF's custom command range. Shell edit menus use their own request-local IDs.
-const TOGGLE_FULLSCREEN: i32 = 26_500;
-const CLIENT_SETTINGS: i32 = TOGGLE_FULLSCREEN + 1;
-const EXIT: i32 = TOGGLE_FULLSCREEN + 2;
-
-fn items(restricted: bool) -> Vec<MenuItem> {
-    [
-        (TOGGLE_FULLSCREEN, "Toggle Fullscreen"),
-        (CLIENT_SETTINGS, "Settings"),
-        (EXIT, "Exit"),
-    ]
-    .into_iter()
-    .filter(|(id, _)| !restricted || *id != CLIENT_SETTINGS)
-    .map(|(id, label)| MenuItem {
-        id,
-        label: label.to_owned(),
-        enabled: true,
-        separator: false,
-    })
-    .collect()
+pub(crate) struct MenuManager {
+    next_serial: AtomicUsize,
+    showing: Mutex<Option<MenuSerial>>,
 }
 
-fn dispatch(id: i32) -> bool {
-    match id {
-        TOGGLE_FULLSCREEN => {
-            if let Some(platform) = jfn_platform_abi::try_lease() {
-                platform.toggle_fullscreen();
-            }
+impl MenuManager {
+    pub(crate) fn new() -> MenuManager {
+        MenuManager {
+            next_serial: AtomicUsize::new(0),
+            showing: Mutex::new(None),
         }
-        CLIENT_SETTINGS => crate::shell::shell_open_client_settings(),
-        EXIT => jfn_playback::shutdown::jfn_shutdown_initiate(),
-        _ => return false,
     }
-    true
-}
 
-fn open_host(point: LogicalPoint, restricted: bool) {
-    let Some(platform) = jfn_platform_abi::try_lease() else {
-        return;
-    };
-    let MenuDelivery::Host(host) = platform.menu_delivery(MenuKind::ContextMenu) else {
-        return;
-    };
-    host.open(MenuRequest {
-        items: items(restricted),
-        x: point.x,
-        y: point.y,
-        width: 0,
-        initial: jfn_platform_abi::MENU_DISMISSED,
-        on_selected: MenuSelection::new(|id| {
-            dispatch(id);
-        }),
-    });
-}
-
-pub(crate) fn shell_actions() -> crate::shell::ApplicationActions {
-    crate::shell::ApplicationActions {
-        open_menu: open_host,
+    pub(crate) fn next_serial(&self) -> MenuSerial {
+        MenuSerial::new(self.next_serial.fetch_add(1, Ordering::Relaxed))
     }
-}
-pub(crate) fn cef_menu() -> jfn_cef::ApplicationMenu {
-    jfn_cef::ApplicationMenu {
-        items: items(false),
-        on_selected: std::sync::Arc::new(dispatch),
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn restricted_menu_keeps_fullscreen_and_exit_but_omits_settings() {
-        assert_eq!(
-            items(false).iter().map(|item| item.id).collect::<Vec<_>>(),
-            [TOGGLE_FULLSCREEN, CLIENT_SETTINGS, EXIT]
-        );
-        assert_eq!(
-            items(true).iter().map(|item| item.id).collect::<Vec<_>>(),
-            [TOGGLE_FULLSCREEN, EXIT]
-        );
-        assert!(!dispatch(jfn_platform_abi::MENU_DISMISSED));
+    pub(crate) fn open(&self, serial: MenuSerial, builder: MenuBuilder) {
+        let request = MenuRequest::from(builder);
+        let Some(platform) = jfn_platform_abi::try_lease() else {
+            return;
+        };
+        let MenuDelivery::Host(host) = platform.menu_delivery(MenuKind::ContextMenu) else {
+            return;
+        };
+        *self.showing.lock() = Some(serial);
+        host.open(request);
+    }
+
+    pub(crate) fn close(&self, serial: MenuSerial) {
+        let mut showing = self.showing.lock();
+        if *showing != Some(serial) {
+            return;
+        }
+        *showing = None;
+        drop(showing);
+        let Some(platform) = jfn_platform_abi::try_lease() else {
+            return;
+        };
+        if let MenuDelivery::Host(host) = platform.menu_delivery(MenuKind::ContextMenu) {
+            host.hide();
+        }
     }
 }

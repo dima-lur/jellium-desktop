@@ -1,25 +1,13 @@
-use cef::rc::Rc;
-use cef::{
-    ImplBrowserHost, ImplTask, KeyEvent, Task, ThreadId, WrapTask, post_task, sys, wrap_task,
-};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use crate::platform_ops::{MenuDelivery, MenuItem, MenuRequest, MenuSelection};
+use cef::{ImplBrowserHost, KeyEvent, sys};
+use jfn_platform_abi::{ChannelValue, Item, LogicalPoint};
+
+use crate::platform_ops::MenuDelivery;
+use crate::receiver::CefMsg;
 
 use super::{Inner, PopupState};
-
-fn options_as_items(options: &[String]) -> Vec<MenuItem> {
-    options
-        .iter()
-        .enumerate()
-        .map(|(i, label)| MenuItem {
-            id: i as i32,
-            label: label.clone(),
-            enabled: true,
-            separator: false,
-        })
-        .collect()
-}
 
 // Windows virtual-key codes CEF expects in KeyEvent::windows_key_code.
 const VK_RETURN: i32 = 0x0D;
@@ -37,7 +25,7 @@ impl Inner {
         p.size_received = false;
         p.options_received = false;
         p.options.clear();
-        p.selected_idx = -1;
+        p.selected_idx = None;
         p.selectable.clear();
         p.anchor = None;
     }
@@ -70,7 +58,7 @@ impl Inner {
     pub(crate) fn set_popup_options(
         self: &Arc<Self>,
         opts: Vec<String>,
-        selected: i32,
+        selected: Option<usize>,
         selectable: Vec<i32>,
         anchor: Option<(i32, i32)>,
     ) {
@@ -110,26 +98,79 @@ impl Inner {
         };
 
         match self.dropdown() {
-            MenuDelivery::Host(host) => {
-                // Dropping a selection dismisses Blink's popup. Only a host
-                // menu owns one; composited popups receive CEF input directly.
-                let inner = Arc::clone(self);
-                let on_selected = MenuSelection::new(move |idx| {
-                    let authority = Arc::clone(&inner.session);
-                    authority.dispatch(|| {
-                        let mut task =
-                            DispatchPopupTask::new(inner, idx, selected, selectable.clone());
-                        let _ = post_task(ThreadId::UI, Some(&mut task));
-                    });
-                });
-                host.open(MenuRequest {
-                    items: options_as_items(&opts),
-                    x,
-                    y,
-                    width: w,
-                    initial: selected,
-                    on_selected,
-                });
+            MenuDelivery::Host(_) => {
+                let builder = self.menu.lock().app.new_menu(LogicalPoint { x, y });
+                let serial = builder.serial();
+                let send_keys = |inner: &Inner, codes: &[i32]| {
+                    if !inner.popup.lock().visible {
+                        return;
+                    }
+                    let Some(host) = inner.host() else {
+                        return;
+                    };
+                    for &code in codes {
+                        let down = KeyEvent {
+                            type_: sys::cef_key_event_type_t::KEYEVENT_RAWKEYDOWN.into(),
+                            windows_key_code: code,
+                            native_key_code: code,
+                            ..KeyEvent::default()
+                        };
+                        let up = KeyEvent {
+                            type_: sys::cef_key_event_type_t::KEYEVENT_KEYUP.into(),
+                            windows_key_code: code,
+                            native_key_code: code,
+                            ..KeyEvent::default()
+                        };
+                        host.send_key_event(Some(&down));
+                        host.send_key_event(Some(&up));
+                    }
+                };
+                let message = |codes: Vec<i32>| {
+                    let weak = Arc::downgrade(self);
+                    CefMsg::Menu {
+                        serial,
+                        callback: Box::new(move || {
+                            if let Some(inner) = weak.upgrade() {
+                                send_keys(&inner, &codes);
+                            }
+                        }),
+                    }
+                };
+                let pos = |opt: usize| {
+                    i32::try_from(opt)
+                        .ok()
+                        .and_then(|opt| selectable.iter().position(|&v| v == opt))
+                };
+                let from = selected.and_then(pos).unwrap_or(0);
+                let items = opts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, label)| {
+                        let codes = match pos(i) {
+                            Some(to) => {
+                                let step = if to >= from { VK_DOWN } else { VK_UP };
+                                let mut codes = vec![step; to.abs_diff(from)];
+                                codes.push(VK_RETURN);
+                                codes
+                            }
+                            None => vec![VK_ESCAPE],
+                        };
+                        Item {
+                            label: label.clone(),
+                            enabled: pos(i).is_some(),
+                            value: ChannelValue::new(self.channel.sender(), message(codes)),
+                        }
+                    })
+                    .collect();
+                let builder = builder
+                    .add_items(items)
+                    .add_on_closed(ChannelValue::new(
+                        self.channel.sender(),
+                        message(vec![VK_ESCAPE]),
+                    ))
+                    .current(selected)
+                    .width(u32::try_from(w).ok().and_then(NonZeroU32::new));
+                self.menu.lock().open_dropdown(builder);
             }
             MenuDelivery::Composited => self.surface().popup_show(x, y, w, h),
             MenuDelivery::Page => {}
@@ -138,7 +179,12 @@ impl Inner {
 
     fn hide_dropdown(&self) {
         match self.dropdown() {
-            MenuDelivery::Host(host) => host.hide(),
+            MenuDelivery::Host(_) => {
+                let menu = self.menu.lock();
+                if let Some(serial) = menu.showing {
+                    menu.app.close_menu(serial);
+                }
+            }
             MenuDelivery::Composited => self.surface().popup_hide(),
             MenuDelivery::Page => {}
         }
@@ -163,78 +209,5 @@ impl Inner {
     pub(super) fn popup_rect(&self) -> (i32, i32) {
         let p = self.popup.lock();
         (p.w, p.h)
-    }
-
-    // CEF OSR has no "set selected index" API for <select>: the popup is a real
-    // RenderWidget that must be driven by forwarded input so Blink commits and
-    // closes it cleanly (which is what lets it reopen). We render the menu
-    // ourselves, then replay the user's pick into CEF's still-open popup —
-    // arrow-key to the chosen row + Enter to commit, or Escape to cancel.
-    fn dispatch_popup_selection(&self, idx: i32, current: i32, selectable: &[i32]) {
-        // Blink already closed the popup: a replayed Escape or arrow would land
-        // on the page instead.
-        if !self.popup.lock().visible {
-            return;
-        }
-        let Some(host) = self.host() else {
-            return;
-        };
-
-        let send_key = |code: i32| {
-            let down = KeyEvent {
-                type_: sys::cef_key_event_type_t::KEYEVENT_RAWKEYDOWN.into(),
-                windows_key_code: code,
-                native_key_code: code,
-                ..KeyEvent::default()
-            };
-            let up = KeyEvent {
-                type_: sys::cef_key_event_type_t::KEYEVENT_KEYUP.into(),
-                windows_key_code: code,
-                native_key_code: code,
-                ..KeyEvent::default()
-            };
-            host.send_key_event(Some(&down));
-            host.send_key_event(Some(&up));
-        };
-
-        if idx < 0 {
-            send_key(VK_ESCAPE);
-            return;
-        }
-
-        // Arrow stepping is in selectable-option space (Blink skips disabled
-        // rows), so map both the popup's current highlight and the target into
-        // that space and step by the difference.
-        let pos = |opt: i32| selectable.iter().position(|&v| v == opt);
-        let from = pos(current).unwrap_or(0) as i32;
-        let Some(to) = pos(idx) else {
-            // Target isn't selectable (shouldn't happen) — just cancel cleanly.
-            send_key(VK_ESCAPE);
-            return;
-        };
-        let delta = to as i32 - from;
-        let step = if delta >= 0 { VK_DOWN } else { VK_UP };
-        for _ in 0..delta.abs() {
-            send_key(step);
-        }
-        send_key(VK_RETURN);
-    }
-}
-
-wrap_task! {
-    struct DispatchPopupTask {
-        inner: Arc<Inner>,
-        index: i32,
-        current: i32,
-        selectable: Vec<i32>,
-    }
-    impl Task {
-        fn execute(&self) {
-            self.inner.session.dispatch(|| self.inner.dispatch_popup_selection(
-                self.index,
-                self.current,
-                &self.selectable,
-            ));
-        }
     }
 }
