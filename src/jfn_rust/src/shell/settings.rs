@@ -11,6 +11,7 @@ use crate::shell::theme::{self, Theme};
 
 pub const SETTINGS_SCROLL: Id = Id::new("shell-settings-scroll");
 pub const CLOSE_CONTROL: Id = Id::new("shell-settings-close");
+pub const LANGUAGE_CONTROL: Id = Id::new("shell-settings-language");
 pub const HARDWARE_DECODING_CONTROL: Id = Id::new("shell-settings-hardware-decoding");
 pub const AUDIO_PASSTHROUGH_FIELD: Id = Id::new("shell-settings-audio-passthrough");
 pub const EXCLUSIVE_AUDIO_CONTROL: Id = Id::new("shell-settings-exclusive-audio");
@@ -35,6 +36,7 @@ pub const SECTION_TITLES: [SettingsLabel; 6] = [
 
 #[derive(Clone, Debug)]
 pub enum Message {
+    LanguageChanged(String),
     HardwareDecodingChanged(String),
     AudioPassthroughEdited(String),
     CommitAudioPassthrough,
@@ -98,6 +100,8 @@ impl Settings {
         let hwdec_selected = Self::selected_hwdec(jfn_config::hwdec());
         let audio_channels = jfn_config::audio_channels();
         let log_level = jfn_config::log_level();
+        let hwdec_locale = locale.clone();
+        let language_locale = locale.clone();
         let channel_locale = locale.clone();
         let decoration_locale = locale.clone();
         let log_locale = locale.clone();
@@ -112,7 +116,7 @@ impl Settings {
                         HARDWARE_DECODING_CONTROL,
                         hwdec_selected,
                         Self::hardware_decoding_choices(),
-                        Clone::clone,
+                        move |value: &String| hardware_decoding_label(&hwdec_locale, value),
                         Message::HardwareDecodingChanged,
                     ),
                     label(SettingsLabel::HardwareDecodingHelp),
@@ -168,7 +172,26 @@ impl Settings {
         ]
         .spacing(22);
 
-        let mut advanced = column![].spacing(16);
+        let mut advanced = column![
+            self.selection(
+                label(SettingsLabel::Language),
+                controls::select(
+                    LANGUAGE_CONTROL,
+                    jfn_config::shell_language(),
+                    std::iter::once(String::new())
+                        .chain(
+                            jfn_platform_abi::lang::available_languages()
+                                .keys()
+                                .cloned()
+                        )
+                        .collect(),
+                    move |value: &String| language_label(&language_locale, value),
+                    Message::LanguageChanged,
+                ),
+                label(SettingsLabel::LanguageHelp),
+            )
+        ]
+        .spacing(16);
         if !self.decoration_options.is_empty() {
             advanced = advanced.push(self.selection(
                 label(SettingsLabel::WindowDecorations),
@@ -255,7 +278,9 @@ impl Settings {
                 ));
         }
 
+        // Reserve the scrollbar's own width so it does not cover translated text.
         scrollable(controls)
+            .spacing(0)
             .id(SETTINGS_SCROLL)
             .height(Length::Fill)
             .into()
@@ -297,6 +322,7 @@ impl Settings {
 
     pub fn update(&mut self, message: Message) -> Outcome {
         match message {
+            Message::LanguageChanged(value) => jfn_config::set_shell_language(&value),
             Message::HardwareDecodingChanged(value) => {
                 if let Ok(hwdec) = value.parse() {
                     jfn_config::set_hwdec(hwdec);
@@ -452,6 +478,7 @@ fn control_order(display: DisplayBackend, decorations: bool, server: bool) -> Ve
         CHANNEL_LAYOUT_CONTROL,
         FORCE_TRANSCODE_CONTROL,
     ];
+    ids.push(LANGUAGE_CONTROL);
     if decorations {
         ids.push(WINDOW_DECORATION_CONTROL);
     }
@@ -463,6 +490,24 @@ fn control_order(display: DisplayBackend, decorations: bool, server: bool) -> Ve
         ids.extend([OPEN_MPV_CONFIG_CONTROL, RESET_SERVER_CONTROL]);
     }
     ids
+}
+
+fn language_label(locale: &LanguageLoader, value: &str) -> String {
+    if value.is_empty() {
+        locale.settings_label(SettingsLabel::LanguageSystem)
+    } else {
+        jfn_platform_abi::lang::available_languages()
+            .get(value)
+            .map_or_else(|| value.to_owned(), |name| format!("{name} ({value})"))
+    }
+}
+
+fn hardware_decoding_label(locale: &LanguageLoader, value: &str) -> String {
+    match value {
+        "auto" => locale.settings_label(SettingsLabel::HardwareDecodingAuto),
+        "no" => locale.settings_label(SettingsLabel::HardwareDecodingDisabled),
+        _ => value.to_owned(),
+    }
 }
 
 fn audio_channel_label(locale: &LanguageLoader, value: &str) -> String {
@@ -588,6 +633,20 @@ mod tests {
     }
 
     #[test]
+    fn hardware_decoding_labels_do_not_change_mpv_values() {
+        let ru = LanguageLoader::new(&["ru".parse().unwrap()]).unwrap();
+        assert_eq!(hardware_decoding_label(&ru, "auto"), "Автоматически");
+        assert_eq!(hardware_decoding_label(&ru, "no"), "Отключено");
+        for value in Settings::hardware_decoding_choices() {
+            let parsed: jfn_config::Hwdec = value.parse().unwrap();
+            assert_eq!(Settings::selected_hwdec(parsed), value);
+            if value != "auto" && value != "no" {
+                assert_eq!(hardware_decoding_label(&ru, &value), value);
+            }
+        }
+    }
+
+    #[test]
     fn section_headings_are_the_six_required_peers_in_order() {
         let en = en();
         assert_eq!(
@@ -613,6 +672,7 @@ mod tests {
                 EXCLUSIVE_AUDIO_CONTROL,
                 CHANNEL_LAYOUT_CONTROL,
                 FORCE_TRANSCODE_CONTROL,
+                LANGUAGE_CONTROL,
                 WINDOW_DECORATION_CONTROL,
                 HIDE_SCROLLBAR_CONTROL,
                 DEVICE_NAME_FIELD,
@@ -629,6 +689,7 @@ mod tests {
                 EXCLUSIVE_AUDIO_CONTROL,
                 CHANNEL_LAYOUT_CONTROL,
                 FORCE_TRANSCODE_CONTROL,
+                LANGUAGE_CONTROL,
                 TRANSPARENT_TITLEBAR_CONTROL,
                 HIDE_SCROLLBAR_CONTROL,
                 DEVICE_NAME_FIELD,

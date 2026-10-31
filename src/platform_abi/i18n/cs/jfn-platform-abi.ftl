@@ -1,3 +1,4 @@
+language-name = Čeština
 connect-server-host = Host
 connect-server-host-help = 192.168.1.100:8096 nebo https://mujserver.cz
 connect-submit = Připojit

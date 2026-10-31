@@ -1,3 +1,4 @@
+language-name = Esperanto
 connect-server-host = Gastigo
 connect-server-host-help = 192.168.1.100:8096 aŭ https://myserver.com
 connect-submit = Konektu

@@ -1,3 +1,4 @@
+language-name = தமிழ்
 connect-server-host = தொகுப்பாளர்
 connect-server-host-help = 192.168.1.100:8096 or https://myserver.com
 connect-submit = இணைக்கவும்

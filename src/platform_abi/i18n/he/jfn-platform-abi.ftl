@@ -1,3 +1,4 @@
+language-name = עברית
 connect-server-host = מארח
 connect-server-host-help = 192.168.1.100:8096 או https://myserver.com
 connect-submit = התחבר

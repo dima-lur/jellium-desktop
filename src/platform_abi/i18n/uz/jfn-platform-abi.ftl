@@ -1,3 +1,4 @@
+language-name = Oʻzbekcha
 connect-server-host = Server manzili
 connect-server-host-help = 192.168.1.100:8096 yoki https://myserver.com
 connect-submit = Ulanish

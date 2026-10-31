@@ -1,3 +1,4 @@
+language-name = Македонски
 connect-server-host = Адреса на серверот
 connect-server-host-help = 192.168.1.100:8096 или https://myserver.com
 connect-submit = Поврзи

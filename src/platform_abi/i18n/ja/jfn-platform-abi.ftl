@@ -1,3 +1,4 @@
+language-name = 日本語
 connect-server-host = ホスト
 connect-server-host-help = 192.168.1.100:8096 又は https://myserver.com
 connect-submit = 接続

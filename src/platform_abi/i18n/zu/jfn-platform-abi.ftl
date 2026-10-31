@@ -1,3 +1,4 @@
+language-name = isiZulu
 connect-server-host = Ikheli Leseva
 connect-server-host-help = 192.168.1.100:8096 noma https://myserver.com
 connect-submit = Xhuma

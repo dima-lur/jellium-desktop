@@ -1,3 +1,4 @@
+language-name = Galego
 connect-server-host = Enderezo do servidor
 connect-server-host-help = 192.168.1.100:8096 ou https://myserver.com
 connect-submit = Conectar

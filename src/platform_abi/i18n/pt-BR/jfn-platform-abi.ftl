@@ -1,3 +1,4 @@
+language-name = Português (Brasil)
 connect-server-host = Servidor
 connect-server-host-help = 192.168.1.100:8096 ou https://meuservidor.com
 connect-submit = Conectar

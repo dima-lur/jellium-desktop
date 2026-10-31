@@ -1,3 +1,4 @@
+language-name = Eesti
 connect-server-host = Peremeesmasin
 connect-server-host-help = 192.168.1.100:8096 või https://myserver.com
 connect-submit = Ühenda

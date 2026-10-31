@@ -1,3 +1,4 @@
+language-name = Türkçe
 connect-server-host = Ana Bilgisayar
 connect-server-host-help = 192.168.1.100:8096 veya https://sunucum.com
 connect-submit = Bağlan

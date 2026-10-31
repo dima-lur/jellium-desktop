@@ -1,3 +1,4 @@
+language-name = മലയാളം
 connect-server-host = ഹോസ്റ്റ്
 connect-server-host-help = 192.168.1.100:8096 അല്ലെങ്കിൽ https://myserver.com
 connect-submit = ബന്ധിപ്പിക്കുക

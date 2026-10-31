@@ -1,3 +1,4 @@
+language-name = हिन्दी
 connect-server-host = सर्वर पता
 connect-server-host-help = 192.168.1.100:8096 या https://myserver.com
 connect-submit = कनेक्ट करें

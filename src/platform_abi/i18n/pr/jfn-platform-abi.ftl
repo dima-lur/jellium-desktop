@@ -1,3 +1,4 @@
+language-name = English (Pirate)
 connect-server-host = Port o' Call
 connect-server-host-help = 192.168.1.100:8096 or https://myserver.com
 connect-submit = Make Fast

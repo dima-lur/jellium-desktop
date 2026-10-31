@@ -1,3 +1,4 @@
+language-name = 简体中文
 connect-server-host = 主机
 connect-server-host-help = 192.168.1.100:8096 或 https://myserver.com
 connect-submit = 连接

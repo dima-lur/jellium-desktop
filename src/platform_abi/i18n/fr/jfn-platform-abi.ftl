@@ -1,3 +1,4 @@
+language-name = Français
 connect-server-host = Nom d'hôte
 connect-server-host-help = 192.168.1.1:8096 ou https://monserveur.com
 connect-submit = Se connecter

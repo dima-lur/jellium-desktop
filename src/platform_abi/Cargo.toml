@@ -26,3 +26,6 @@ nix.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+fluent-syntax = "0.12"

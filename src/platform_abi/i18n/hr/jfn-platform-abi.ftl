@@ -1,3 +1,4 @@
+language-name = Hrvatski
 connect-server-host = Domaćin
 connect-server-host-help = 192.168.1.100:8096 ili https://myserver.com
 connect-submit = Povezati

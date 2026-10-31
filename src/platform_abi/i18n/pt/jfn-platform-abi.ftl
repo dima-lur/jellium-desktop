@@ -1,3 +1,4 @@
+language-name = Português
 connect-server-host = Servidor
 connect-server-host-help = 192.168.1.100:8096 ou https://omeudominio.com
 connect-submit = Ligar

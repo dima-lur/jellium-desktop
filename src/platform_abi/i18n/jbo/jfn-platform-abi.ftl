@@ -1,3 +1,4 @@
+language-name = Lojban
 connect-server-host = samse'u judri
 connect-server-host-help = 192.168.1.100:8096 .a https://myserver.com
 connect-submit = jorne

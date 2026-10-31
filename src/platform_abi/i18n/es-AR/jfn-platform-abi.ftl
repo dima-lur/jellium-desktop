@@ -1,3 +1,4 @@
+language-name = Español (Argentina)
 connect-server-host = Host
 connect-server-host-help = 192.168.1.100:8096 o https://miservidor.com
 connect-submit = Conectar

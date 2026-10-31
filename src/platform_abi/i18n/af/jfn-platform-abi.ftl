@@ -1,3 +1,4 @@
+language-name = Afrikaans
 connect-server-host = Bedieneradres
 connect-server-host-help = 192.168.1.100:8096 of https://myserver.com
 connect-submit = Konnekteer

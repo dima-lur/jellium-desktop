@@ -1,3 +1,4 @@
+language-name = Dansk
 connect-server-host = Vært
 connect-server-host-help = F. eks: 192.168.1.100:8096 eller https://myserver.com
 connect-submit = Forbind

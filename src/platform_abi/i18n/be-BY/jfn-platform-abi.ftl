@@ -1,3 +1,4 @@
+language-name = Беларуская
 connect-server-host = Вядучы
 connect-server-host-help = 192.168.1.100:8096 або https://myserver.com
 connect-submit = Падлучыцца
@@ -26,7 +27,7 @@ settings-section-advanced = Пашыраныя
 settings-section-mpv-config = Канфігурацыя MPV
 settings-section-server = Сервер
 settings-hardware-decoding = Апаратнае дэкадаванне
-settings-hardware-decoding-help = Рэжым апаратнага дэкадавання відэа. Выкарыстоўвайце "auto" для аўтаматычнага вызначэння або "no" для адключэння.
+settings-hardware-decoding-help = Выберыце «Аўтаматычна» для падбору апаратнага дэкадавальніка або «Адключана» для праграмнага дэкадавання.
 settings-audio-passthrough = Перадача аўдыя напрамую
 settings-audio-passthrough-help = Спіс кодэкаў праз коску для прамой перадачы на аўдыяпрыладу (напрыклад, ac3,eac3,dts-hd,truehd). Пакіньце пустым, каб адключыць.
 settings-exclusive-audio = Эксклюзіўны аўдыявывад
@@ -60,3 +61,12 @@ settings-log-level-warn = Папярэджанне
 settings-log-level-error = Памылка
 settings-open-mpv-config = Адкрыць каталог канфігурацыі mpv
 settings-reset-server = Скінуць захаваны сервер
+
+settings-language = Мова абалонкі
+settings-language-help = Мова меню і налад праграмы зменіцца пасля перазапуску. Мова інтэрфейсу Jellyfin выбіраецца асобна ў наладах адлюстравання.
+settings-language-system = Як у сістэме
+settings-hardware-decoding-auto = Аўтаматычна
+settings-hardware-decoding-disabled = Адключана
+about-version = Версія
+about-config-directory = Папка налад
+about-current-log = Бягучы журнал

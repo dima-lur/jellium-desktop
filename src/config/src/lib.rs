@@ -55,6 +55,7 @@ struct SettingsData {
     audio_channels: String,
     log_level: String,
     device_name: String,
+    shell_language: String,
     window: JfnWindowGeometry,
     audio_exclusive: bool,
     disable_gpu_compositing: bool,
@@ -73,6 +74,7 @@ impl Default for SettingsData {
             audio_channels: String::new(),
             log_level: String::new(),
             device_name: String::new(),
+            shell_language: String::new(),
             window: JfnWindowGeometry::default(),
             audio_exclusive: false,
             disable_gpu_compositing: false,
@@ -149,6 +151,9 @@ struct SettingsFile {
 
     #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     device_name: Option<String>,
+
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    shell_language: Option<String>,
 }
 
 /// Reads any JSON value and yields `None` unless it deserializes as `T`, so a
@@ -238,6 +243,11 @@ impl SettingsData {
         if let Some(v) = file.audio_channels {
             self.audio_channels = v;
         }
+        if let Some(v) = file.shell_language
+            && let Some(language) = jfn_platform_abi::lang::normalize_language(&v)
+        {
+            self.shell_language = language;
+        }
         if let Some(v) = file.log_level {
             self.log_level = v;
         }
@@ -311,6 +321,7 @@ impl SettingsData {
             window_decorations: self.window_decorations,
             hide_scrollbar: (!self.hide_scrollbar).then_some(false),
             device_name: (!self.device_name.is_empty()).then(|| self.device_name.clone()),
+            shell_language: (!self.shell_language.is_empty()).then(|| self.shell_language.clone()),
         }
     }
 
@@ -520,6 +531,16 @@ string_accessors!(audio_passthrough, set_audio_passthrough, audio_passthrough);
 string_accessors!(audio_channels, set_audio_channels, audio_channels);
 string_accessors!(log_level, set_log_level, log_level);
 
+pub fn shell_language() -> String {
+    state().lock().data.shell_language.clone()
+}
+
+pub fn set_shell_language(value: &str) {
+    if let Some(language) = jfn_platform_abi::lang::normalize_language(value) {
+        state().lock().data.shell_language = language;
+    }
+}
+
 pub fn device_name() -> String {
     state().lock().data.device_name.clone()
 }
@@ -703,6 +724,7 @@ mod tests {
             audio_channels: "stereo".into(),
             log_level: "debug".into(),
             device_name: "box".into(),
+            shell_language: "ru".into(),
             window: super::JfnWindowGeometry {
                 x: 1,
                 y: 2,
@@ -742,6 +764,7 @@ mod tests {
                 "windowDecorations",
                 "hideScrollbar",
                 "deviceName",
+                "shellLanguage",
             ]
         );
         assert!(text.contains(r#""windowDecorations":"serverThemed""#));
@@ -754,6 +777,28 @@ mod tests {
         assert!(data.transparent_titlebar);
         assert!(data.hide_scrollbar);
         assert_eq!(data.window.x, -1);
+    }
+
+    #[test]
+    fn shell_language_round_trips_and_system_mode_removes_override() {
+        let mut data = loaded(r#"{"shellLanguage":"RU"}"#);
+        assert_eq!(data.shell_language, "ru");
+        let serialized = serde_json::to_string(&data.to_file()).unwrap();
+        assert_eq!(loaded(&serialized).shell_language, "ru");
+        data.overlay(serde_json::from_str(r#"{"shellLanguage":""}"#).unwrap());
+        assert!(data.shell_language.is_empty());
+        assert!(data.to_file().shell_language.is_none());
+    }
+
+    #[test]
+    fn invalid_shell_language_does_not_discard_other_settings() {
+        for value in [r#""zz-ZZ""#, r#""../../ru""#, "42", "null"] {
+            let data = loaded(&format!(
+                r#"{{"shellLanguage":{value},"deviceName":"room"}}"#
+            ));
+            assert!(data.shell_language.is_empty());
+            assert_eq!(data.device_name, "room");
+        }
     }
 
     #[test]

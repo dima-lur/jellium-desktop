@@ -1,3 +1,4 @@
+language-name = Norsk bokmål
 connect-server-host = Vertsnavn
 connect-server-host-help = 192.168.1.100:8096 eller https://minserver.no
 connect-submit = Koble til

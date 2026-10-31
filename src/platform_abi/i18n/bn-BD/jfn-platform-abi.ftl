@@ -1,3 +1,4 @@
+language-name = বাংলা
 connect-server-host = সার্ভারের ঠিকানা
 connect-server-host-help = 192.168.1.100:8096 অথবা https://myserver.com
 connect-submit = কানেক্ট

@@ -1,3 +1,4 @@
+language-name = Svenska
 connect-server-host = Värd
 connect-server-host-help = 192.168.1.100:8096 eller https://min.server.com
 connect-submit = Anslut

@@ -7,13 +7,14 @@ use iced_core::widget::Id;
 use iced_core::{Alignment, Element, Length, Padding};
 use iced_widget::{Text, button, column, container, image, row, text};
 
+use jfn_platform_abi::lang::{LanguageLoader, SettingsLabel};
+
 use crate::shell::controls;
 use crate::shell::theme::{self, Theme};
 
 pub const CONFIG_DIRECTORY_CONTROL: Id = Id::new("shell-about-config-directory");
 pub const CURRENT_LOG_CONTROL: Id = Id::new("shell-about-current-log");
 
-const VERSION_LABEL: &str = "Version";
 const CEF_LABEL: &str = "CEF";
 
 #[derive(Clone, Debug)]
@@ -32,14 +33,29 @@ impl About {
         About { metadata }
     }
 
-    pub fn view(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+    pub fn view(
+        &self,
+        locale: &LanguageLoader,
+    ) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         let mut rows = column![
-            self.row(VERSION_LABEL, &self.metadata.app_version, None),
-            self.row(CEF_LABEL, &self.metadata.cef_version.to_string(), None),
+            self.row(
+                locale.settings_label(SettingsLabel::Version),
+                &self.metadata.app_version,
+                None
+            ),
+            self.row(
+                CEF_LABEL.to_owned(),
+                &self.metadata.cef_version.to_string(),
+                None
+            ),
         ]
         .spacing(8);
         for (label, id, path) in self.path_actions() {
-            rows = rows.push(self.row(label, &path.to_string_lossy(), Some((id, path.clone()))));
+            rows = rows.push(self.row(
+                locale.settings_label(label),
+                &path.to_string_lossy(),
+                Some((id, path.clone())),
+            ));
         }
 
         about_layout(
@@ -49,21 +65,21 @@ impl About {
         )
     }
 
-    fn path_actions(&self) -> Vec<(&'static str, Id, &PathBuf)> {
+    fn path_actions(&self) -> Vec<(SettingsLabel, Id, &PathBuf)> {
         let mut actions = vec![(
-            "Config directory",
+            SettingsLabel::ConfigDirectory,
             CONFIG_DIRECTORY_CONTROL,
             &self.metadata.config_dir,
         )];
         if let Some(log) = &self.metadata.log_file {
-            actions.push(("Current log file", CURRENT_LOG_CONTROL, log));
+            actions.push((SettingsLabel::CurrentLog, CURRENT_LOG_CONTROL, log));
         }
         actions
     }
 
     fn row<'a>(
         &self,
-        label: &'a str,
+        label: String,
         value: &str,
         action: Option<(Id, PathBuf)>,
     ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
@@ -132,11 +148,6 @@ mod tests {
             log_file,
             ..crate::shell::metadata::ApplicationMetadata::testing()
         })
-    }
-
-    #[test]
-    fn version_labels_are_exact() {
-        assert_eq!([VERSION_LABEL, CEF_LABEL], ["Version", "CEF"]);
     }
 
     #[test]

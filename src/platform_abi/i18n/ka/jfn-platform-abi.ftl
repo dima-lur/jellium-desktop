@@ -1,3 +1,4 @@
+language-name = ქართული
 connect-server-host = სერვერის მისამართი
 connect-server-host-help = 192.168.1.100:8096 ან https://myserver.com
 connect-submit = დაკავშირება

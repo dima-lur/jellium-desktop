@@ -1,3 +1,4 @@
+language-name = Íslenska
 connect-server-host = Vistfang þjóns
 connect-server-host-help = 192.168.1.100:8096 eða https://myserver.com
 connect-submit = Tengjast

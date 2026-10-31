@@ -1,3 +1,4 @@
+language-name = ਪੰਜਾਬੀ
 connect-server-host = ਸਰਵਰ ਪਤਾ
 connect-server-host-help = 192.168.1.100:8096 ਜਾਂ https://myserver.com
 connect-submit = ਕਨੈਕਟ ਕਰੋ

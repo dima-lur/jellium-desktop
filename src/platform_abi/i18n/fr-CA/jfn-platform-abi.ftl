@@ -1,3 +1,4 @@
+language-name = Français (Canada)
 connect-server-host = Hôte
 connect-server-host-help = 192.168.1.100:8096 ou https://monserveur.com
 connect-submit = Connexion

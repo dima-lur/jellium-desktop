@@ -1,3 +1,4 @@
+language-name = Lietuvių
 connect-server-host = Serverio adresas
 connect-server-host-help = 192.168.1.100:8096 arba https://manoserveris.lt
 connect-submit = Prisijungti

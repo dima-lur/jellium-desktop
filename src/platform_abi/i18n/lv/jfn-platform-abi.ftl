@@ -1,3 +1,4 @@
+language-name = Latviešu
 connect-server-host = Resursdators
 connect-server-host-help = 192.168.1.100:8096 vai https://myserver.com
 connect-submit = Savienot

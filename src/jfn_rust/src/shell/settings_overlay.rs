@@ -185,7 +185,7 @@ impl SettingsOverlay {
         .spacing(12);
         let content = match self.active {
             Tab::Settings => self.settings.view(locale).map(Message::Settings),
-            Tab::About => self.about.view().map(Message::About),
+            Tab::About => self.about.view(locale).map(Message::About),
         };
         let body = column![header, content].spacing(18);
         let card = mouse_area(card(body)).on_press(Message::Swallow);

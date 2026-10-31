@@ -1,3 +1,4 @@
+language-name = Nederlands
 connect-server-host = Host
 connect-server-host-help = 192.168.1.100:8096 of https://mijnserver.nl
 connect-submit = Verbinden

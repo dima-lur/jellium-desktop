@@ -1,3 +1,4 @@
+language-name = Slovenščina
 connect-server-host = Naslov strežnika
 connect-server-host-help = 192.168.1.100:8096 ali https://myserver.com
 connect-submit = Poveži

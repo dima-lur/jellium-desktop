@@ -3,7 +3,8 @@
 //! from the negotiated languages falls back to the `i18n.toml` fallback
 //! language.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
 
 use i18n_embed::fluent::{FluentLanguageLoader, fluent_language_loader};
 use i18n_embed::unic_langid::LanguageIdentifier;
@@ -43,6 +44,14 @@ pub enum Label {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SettingsLabel {
+    Language,
+    LanguageHelp,
+    LanguageSystem,
+    HardwareDecodingAuto,
+    HardwareDecodingDisabled,
+    Version,
+    ConfigDirectory,
+    CurrentLog,
     Title,
     About,
     RestartNotice,
@@ -90,7 +99,38 @@ pub enum SettingsLabel {
 }
 
 pub fn detect() -> Result<LanguageLoader, I18nEmbedError> {
-    LanguageLoader::new(&DesktopLanguageRequester::requested_languages())
+    detect_with_preference("")
+}
+
+pub fn detect_with_preference(preferred: &str) -> Result<LanguageLoader, I18nEmbedError> {
+    LanguageLoader::with_preference(preferred, &DesktopLanguageRequester::requested_languages())
+}
+
+/// Names are written in each language so the picker remains usable after a
+/// language change. Only the names are retained, not a loader for every locale.
+pub fn available_languages() -> &'static BTreeMap<String, String> {
+    static LANGUAGES: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+    LANGUAGES.get_or_init(|| {
+        Localizations::iter()
+            .filter_map(|path| {
+                let (id, _) = path.split_once('/')?;
+                let language = id.parse().ok()?;
+                let loader = LanguageLoader::new(&[language]).ok()?;
+                Some((id.to_owned(), loader.0.get("language-name")))
+            })
+            .collect()
+    })
+}
+
+/// Empty means follow the OS. Unknown or malformed overrides are ignored by
+/// the settings store; a stale config must not prevent application startup.
+pub fn normalize_language(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Some(String::new());
+    }
+    let id = value.parse::<LanguageIdentifier>().ok()?.to_string();
+    available_languages().contains_key(&id).then_some(id)
 }
 
 /// The negotiated languages' bundles; clones share them.
@@ -98,6 +138,17 @@ pub fn detect() -> Result<LanguageLoader, I18nEmbedError> {
 pub struct LanguageLoader(Arc<FluentLanguageLoader>);
 
 impl LanguageLoader {
+    pub fn with_preference(
+        preferred: &str,
+        system: &[LanguageIdentifier],
+    ) -> Result<LanguageLoader, I18nEmbedError> {
+        if let Some(preference) = normalize_language(preferred).and_then(|id| id.parse().ok()) {
+            Self::new(&[preference])
+        } else {
+            Self::new(system)
+        }
+    }
+
     pub fn new(requested: &[LanguageIdentifier]) -> Result<LanguageLoader, I18nEmbedError> {
         let loader = fluent_language_loader!();
         i18n_embed::select(&loader, &Localizations, requested)?;
@@ -141,6 +192,16 @@ impl LanguageLoader {
     pub fn settings_label(&self, label: SettingsLabel) -> String {
         let loader: &FluentLanguageLoader = &self.0;
         match label {
+            SettingsLabel::Language => fl!(loader, "settings-language"),
+            SettingsLabel::LanguageHelp => fl!(loader, "settings-language-help"),
+            SettingsLabel::LanguageSystem => fl!(loader, "settings-language-system"),
+            SettingsLabel::HardwareDecodingAuto => fl!(loader, "settings-hardware-decoding-auto"),
+            SettingsLabel::HardwareDecodingDisabled => {
+                fl!(loader, "settings-hardware-decoding-disabled")
+            }
+            SettingsLabel::Version => fl!(loader, "about-version"),
+            SettingsLabel::ConfigDirectory => fl!(loader, "about-config-directory"),
+            SettingsLabel::CurrentLog => fl!(loader, "about-current-log"),
             SettingsLabel::Title => fl!(loader, "settings-title"),
             SettingsLabel::About => fl!(loader, "settings-about"),
             SettingsLabel::RestartNotice => fl!(loader, "settings-restart-notice"),
@@ -200,5 +261,81 @@ impl LanguageLoader {
             SettingsLabel::OpenMpvConfig => fl!(loader, "settings-open-mpv-config"),
             SettingsLabel::ResetServer => fl!(loader, "settings-reset-server"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn every_catalog_parses_and_every_message_resolves() {
+        let mut catalogs = BTreeMap::new();
+        for path in Localizations::iter() {
+            let asset = Localizations::get(&path).unwrap();
+            let source = std::str::from_utf8(&asset.data).unwrap();
+            let resource = fluent_syntax::parser::parse(source).unwrap();
+            let mut keys = BTreeSet::new();
+            for entry in resource.body {
+                if let fluent_syntax::ast::Entry::Message(message) = entry {
+                    assert!(message.value.is_some(), "{path}: {}", message.id.name);
+                    assert!(
+                        keys.insert(message.id.name.to_owned()),
+                        "duplicate in {path}"
+                    );
+                }
+            }
+            let (id, _) = path.split_once('/').unwrap();
+            catalogs.insert(id.to_owned(), keys);
+        }
+        let english = &catalogs["en"];
+        assert_eq!(catalogs.len(), available_languages().len());
+        for (id, keys) in &catalogs {
+            assert!(keys.contains("language-name"), "{id}");
+            assert!(keys.is_subset(english), "unknown key in {id}");
+            let loader = LanguageLoader::new(&[id.parse().unwrap()]).unwrap();
+            assert_eq!(loader.language().to_string(), *id);
+            for key in english {
+                let value = loader.0.get(key);
+                assert!(!value.is_empty() && value != *key, "{id}: {key}");
+            }
+        }
+        for id in ["ru", "be-BY"] {
+            assert_eq!(
+                &catalogs[id], english,
+                "incomplete primary translation: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_language_overrides_system_and_invalid_override_is_ignored() {
+        let system = ["ru-RU".parse().unwrap()];
+        let selected = LanguageLoader::with_preference("en", &system).unwrap();
+        assert_eq!(selected.settings_label(SettingsLabel::Title), "Settings");
+        // An explicit language must not borrow untranslated messages from the
+        // OS language: its fallback is English, independent of this machine.
+        let german = LanguageLoader::with_preference("de", &system).unwrap();
+        assert_eq!(
+            german.settings_label(SettingsLabel::Language),
+            "Shell language"
+        );
+        for preference in ["", "unknown-language", "../../ru"] {
+            let loader = LanguageLoader::with_preference(preference, &system).unwrap();
+            assert_eq!(loader.settings_label(SettingsLabel::Title), "Настройки");
+        }
+    }
+
+    #[test]
+    fn unsupported_system_language_and_missing_messages_use_english() {
+        let loader = LanguageLoader::new(&["zz-ZZ".parse().unwrap()]).unwrap();
+        assert_eq!(loader.settings_label(SettingsLabel::Title), "Settings");
+        let german = LanguageLoader::new(&["de-DE".parse().unwrap()]).unwrap();
+        assert_eq!(german.language().to_string(), "de");
+        assert_eq!(
+            german.settings_label(SettingsLabel::Language),
+            "Shell language"
+        );
     }
 }

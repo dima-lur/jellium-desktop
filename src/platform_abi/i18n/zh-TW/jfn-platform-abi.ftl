@@ -1,3 +1,4 @@
+language-name = 繁體中文（台灣）
 connect-server-host = 主機
 connect-server-host-help = 192.168.1.100:8096 或是 https://myserver.com
 connect-submit = 連線

@@ -1,3 +1,4 @@
+language-name = Українська
 connect-server-host = Хост
 connect-server-host-help = 192.168.1.100:8096 або https://myserver.com
 connect-submit = Підключитись

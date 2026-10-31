@@ -1,3 +1,4 @@
+language-name = Tiếng Việt
 connect-server-host = Máy chủ
 connect-server-host-help = 192.168.1.100:8096 hoặc https://myserver.com
 connect-submit = Kết nối

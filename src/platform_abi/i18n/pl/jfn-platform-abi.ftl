@@ -1,3 +1,4 @@
+language-name = Polski
 connect-server-host = Serwer
 connect-server-host-help = 192.168.1.100:8096 lub https://mojserwer.pl
 connect-submit = Połącz

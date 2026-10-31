@@ -1,3 +1,4 @@
+language-name = မြန်မာ
 connect-server-host = ဆာဗာလိပ်စာ
 connect-server-host-help = 192.168.1.100:8096 သို့မဟုတ် https://myserver.com
 connect-submit = ချိတ်ဆက်ပါ

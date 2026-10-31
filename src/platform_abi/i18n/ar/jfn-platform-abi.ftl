@@ -1,3 +1,4 @@
+language-name = العربية
 connect-server-host = المضيف
 connect-server-host-help = 192.168.1.100:8096 أو https://myserver.com
 connect-submit = إتصال

@@ -3100,6 +3100,7 @@ name = "jfn-platform-abi"
 version = "0.1.0-dev"
 dependencies = [
  "cef",
+ "fluent-syntax",
  "i18n-embed",
  "i18n-embed-fl",
  "jfn-gpu-paint",

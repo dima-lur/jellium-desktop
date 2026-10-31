@@ -1,3 +1,4 @@
+language-name = Magyar
 connect-server-host = Kiszolgáló
 connect-server-host-help = 192.168.1.100:8096 vagy https://myserver.com
 connect-submit = Kapcsolódás

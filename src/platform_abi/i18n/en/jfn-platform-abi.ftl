@@ -1,3 +1,4 @@
+language-name = English
 connect-server-host = Server Address
 connect-server-host-help = 192.168.1.100:8096 or https://myserver.com
 connect-submit = Connect
@@ -26,7 +27,7 @@ settings-section-advanced = Advanced
 settings-section-mpv-config = MPV config
 settings-section-server = Server
 settings-hardware-decoding = Hardware Decoding
-settings-hardware-decoding-help = Hardware video decoding mode. Use "auto" for automatic detection or "no" to disable.
+settings-hardware-decoding-help = Hardware video decoding mode. Choose Automatic to select a hardware decoder, or Disabled to use software decoding.
 settings-audio-passthrough = Audio Passthrough
 settings-audio-passthrough-help = Comma-separated list of codecs to pass through to the audio device (e.g. ac3,eac3,dts-hd,truehd). Leave empty to disable.
 settings-exclusive-audio = Exclusive Audio Output
@@ -60,3 +61,12 @@ settings-log-level-warn = Warning
 settings-log-level-error = Error
 settings-open-mpv-config = Open mpv config directory
 settings-reset-server = Reset Saved Server
+
+settings-language = Shell language
+settings-language-help = Applies to desktop menus and settings after restarting. The Jellyfin interface language is selected separately in Display settings.
+settings-language-system = Same as system
+settings-hardware-decoding-auto = Automatic
+settings-hardware-decoding-disabled = Disabled
+about-version = Version
+about-config-directory = Configuration folder
+about-current-log = Current log file

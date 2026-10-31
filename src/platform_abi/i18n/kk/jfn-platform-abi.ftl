@@ -1,3 +1,4 @@
+language-name = Қазақша
 connect-server-host = Tüiın
 connect-server-host-help = 192.168.1.100:8096 nemese https://myserver.com
 connect-submit = Qosylu
