@@ -140,7 +140,8 @@
 
                 const canNext = currentIndex < playlist.length - 1;
 
-                const state = pm.getPlayerState ? pm.getPlayerState() : null;
+                const player = this.attachedPlayer || pm.getCurrentPlayer?.() || pm._currentPlayer;
+                const state = player ? pm.getPlayerState?.(player) : null;
                 const isMusic = state?.NowPlayingItem?.MediaType === 'Audio';
                 const canPrev = isMusic ? true : (currentIndex > 0);
 
@@ -163,13 +164,13 @@
 
         setupEvents(pm) {
             this.listen(pm, 'playbackstart', (_event, player) => {
-                const state = pm.getPlayerState?.();
-                if (state?.NowPlayingItem) this.notifyMetadata(state.NowPlayingItem);
                 if (player !== this.attachedPlayer) {
                     this.playerSubscriptions.splice(0).forEach(dispose => dispose());
                     this.attachedPlayer = player;
                     if (player) this.listen(player, 'playing', () => this.updateQueueState(), this.playerSubscriptions);
                 }
+                const state = player ? pm.getPlayerState?.(player) : null;
+                if (state?.NowPlayingItem) this.notifyMetadata(state.NowPlayingItem);
                 this.updateQueueState();
             });
             this.listen(pm, 'playbackstop', () => {
@@ -187,7 +188,7 @@
             });
             this.connect(window.api.input.positionSeek, positionMs => {
                 const player = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
-                const duration = pm.duration?.() || 0;
+                const duration = player ? pm.duration?.(player) || 0 : 0;
                 if (player && duration > 0) pm.seekPercent(positionMs * 10000 / duration * 100, player);
             });
             this.connect(window.api.input.rateChanged, rate => {

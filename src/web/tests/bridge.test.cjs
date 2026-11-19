@@ -146,3 +146,35 @@ test('superseded artwork cannot clear a newer request and destroy aborts its rea
     assert.equal(plugin.pendingArtworkUrl, null);
     assert.equal(sent, 0);
 });
+
+test('player switch queries the new player and seeking without a player is harmless', () => {
+    const ctx = setup();
+    load(ctx, 'input-plugin.js');
+    const video = { item: { MediaType: 'Video' } };
+    const audio = { item: { MediaType: 'Audio' } };
+    const states = [];
+    const queries = [];
+    ctx.jmpNative.notifyQueueChange = (...state) => states.push(state);
+    const pm = {
+        _currentPlayer: video,
+        _playQueueManager: { getPlaylist: () => [video, audio], getCurrentPlaylistIndex: () => 0 },
+        getPlayerState(player) { assert.ok(player); queries.push(player); return { NowPlayingItem: player.item }; },
+        duration(player) { assert.ok(player); return 10000000; },
+        seekPercent() {}
+    };
+    const plugin = new ctx._inputPlugin({ playbackManager: pm, inputManager: {} });
+    plugin.notifyMetadata = () => {};
+    ctx.Events.trigger(pm, 'playbackstart', video);
+    ctx.Events.trigger(pm, 'playbackstop');
+    ctx.Events.trigger(pm, 'playbackstart', audio);
+    assert.equal(plugin.attachedPlayer, audio);
+    assert.equal(queries.at(-1), audio);
+    assert.deepEqual(states.at(-1), [true, true]);
+    const count = states.length;
+    ctx.Events.trigger(video, 'playing');
+    assert.equal(states.length, count);
+    pm._currentPlayer = null;
+    ctx.Events.trigger(pm, 'playbackstop');
+    ctx.api.input.positionSeek(100);
+    plugin.destroy();
+});
