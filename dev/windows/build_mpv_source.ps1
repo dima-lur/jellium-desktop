@@ -30,7 +30,8 @@ if ($Arch -eq "arm64") {
 
 # Check if already built
 $OutputLib = Join-Path $OutputDir "lib\mpv.lib"
-if ((Test-Path $OutputLib) -and -not $Force) {
+$LuaBuildStamp = Join-Path $OutputDir ".built-with-luajit-$Arch"
+if ((Test-Path $OutputLib) -and (Test-Path $LuaBuildStamp) -and -not $Force) {
     Write-Host "mpv already built at $OutputDir" -ForegroundColor Green
     Write-Host "Use -Force to rebuild"
     exit 0
@@ -113,6 +114,7 @@ pacman -S --needed --noconfirm \
     $PkgPrefix-vulkan-loader \
     $PkgPrefix-shaderc \
     $PkgPrefix-spirv-cross \
+    $PkgPrefix-luajit \
     $PkgPrefix-llvm \
     $PkgPrefix-tools
 "@ -Description "Installing MSYS2 dependencies"
@@ -131,7 +133,7 @@ cd '$MsysMpvSource' && \
 meson setup build --default-library=shared \
     -Dlibmpv=true \
     -Dcplayer=true \
-    -Dlua=disabled \
+    -Dlua=luajit \
     -Djavascript=disabled \
     -Dcdda=disabled \
     -Ddvdnav=disabled \
@@ -141,7 +143,7 @@ meson setup build --default-library=shared \
     -Dvapoursynth=disabled
 "@ -Description "Configuring mpv with meson"
 } else {
-    Write-Host "Meson already configured (use -Force to reconfigure)" -ForegroundColor Yellow
+    Invoke-Msys2 "cd '$MsysMpvSource' && meson configure build -Dlua=luajit" -Description "Enabling LuaJIT in the existing mpv build"
 }
 
 # Build
@@ -342,6 +344,7 @@ if (-not (Test-Path (Join-Path $LibDir "avcodec.lib"))) {
     exit 1
 }
 Write-Host "Generated avcodec.lib" -ForegroundColor Green
+New-Item -ItemType File -Path $LuaBuildStamp -Force | Out-Null
 
 Write-Host ""
 Write-Host "=== Build complete ===" -ForegroundColor Green

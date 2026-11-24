@@ -23,27 +23,31 @@ use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, MAPVK_VK_TO_CHAR, MapVirtualKeyW, SetFocus, VK_ADD, VK_BROWSER_BACK,
-    VK_BROWSER_FORWARD, VK_CAPITAL, VK_CLEAR, VK_CONTROL, VK_DECIMAL, VK_DELETE, VK_DIVIDE,
-    VK_DOWN, VK_END, VK_F4, VK_HOME, VK_INSERT, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN,
-    VK_MENU, VK_MULTIPLY, VK_NEXT, VK_NUMLOCK, VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3,
-    VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9, VK_PRIOR, VK_RCONTROL,
-    VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SUBTRACT, VK_UP,
+    GetKeyState, MAPVK_VK_TO_CHAR, MapVirtualKeyW, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
+    TrackMouseEvent, VK_ADD, VK_BROWSER_BACK, VK_BROWSER_FORWARD, VK_CAPITAL, VK_CLEAR, VK_CONTROL,
+    VK_DECIMAL, VK_DELETE, VK_DIVIDE, VK_DOWN, VK_END, VK_F4, VK_HOME, VK_INSERT, VK_LCONTROL,
+    VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_MULTIPLY, VK_NEXT, VK_NUMLOCK, VK_NUMPAD0,
+    VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7, VK_NUMPAD8,
+    VK_NUMPAD9, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    VK_SUBTRACT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GA_ROOT, GetAncestor,
-    GetClientRect, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HCURSOR, HICON,
-    HMENU, HTCLIENT, IDC_APPSTARTING, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_HELP, IDC_IBEAM, IDC_NO,
-    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_WAIT, KF_EXTENDED,
-    LoadCursorW, MSG, PostMessageW, PostThreadMessageW, RegisterClassExW, SET_WINDOW_POS_FLAGS,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetCursor, SetWindowPos, TranslateMessage,
-    UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APPCOMMAND, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDBLCLK,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SYSCHAR, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_CHILD, WS_VISIBLE, XBUTTON2,
+    GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
+    HCURSOR, HICON, HMENU, HTCLIENT, IDC_APPSTARTING, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_HELP,
+    IDC_IBEAM, IDC_NO, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_WAIT,
+    KF_EXTENDED, LoadCursorW, MSG, PostMessageW, PostThreadMessageW, RegisterClassExW,
+    SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetCursor, SetWindowPos,
+    TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APPCOMMAND, WM_CHAR,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCDESTROY, WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SETFOCUS, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
+    WS_CHILD, WS_VISIBLE, XBUTTON2,
 };
 use windows::core::{PCWSTR, w};
+
+const WM_JFN_RECREATE_WINDOW: u32 = windows::Win32::UI::WindowsAndMessaging::WM_USER + 2;
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -59,8 +63,8 @@ use jfn_platform_abi::{LogicalPoint, PhysicalPoint};
 
 use jfn_input::key::{KeyReport, PhysicalKey};
 use jfn_input::{
-    jfn_input_dispatch_history_nav, jfn_input_dispatch_key, jfn_input_dispatch_keyboard_focus,
-    jfn_input_dispatch_mouse_button, jfn_input_dispatch_mouse_move, jfn_input_dispatch_scroll,
+    dispatch_tracked_pointer, jfn_input_dispatch_history_nav, jfn_input_dispatch_key,
+    jfn_input_dispatch_keyboard_focus, jfn_input_dispatch_mouse_button, jfn_input_dispatch_scroll,
     jfn_input_dispatch_utf16,
 };
 use jfn_playback::shutdown::jfn_shutdown_initiate;
@@ -316,6 +320,10 @@ fn log_press(msg: u32, physical: PhysicalPoint, logical: LogicalPoint) {
     );
 }
 
+thread_local! {
+    static POINTER_FOCUS: std::cell::Cell<jfn_input::Target> = const { std::cell::Cell::new(jfn_input::Target::None) };
+}
+
 unsafe extern "system" fn input_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_SETCURSOR if u32::from(loword_u32(lp.0 as u32)) == HTCLIENT => {
@@ -323,22 +331,53 @@ unsafe extern "system" fn input_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
                 CursorShape::from_cef(STATE.lock().cursor_type).unwrap_or(CursorShape::Pointer);
             if shape == CursorShape::None {
                 unsafe { SetCursor(None) };
-            } else {
-                let cur = unsafe { LoadCursorW(None, cef_cursor_to_win(shape)).ok() };
-                unsafe { SetCursor(cur) };
+                return LRESULT(1);
             }
-            return LRESULT(1);
+            match unsafe { LoadCursorW(None, cef_cursor_to_win(shape)) } {
+                Ok(cursor) => {
+                    unsafe { SetCursor(Some(cursor)) };
+                    return LRESULT(1);
+                }
+                Err(e) => tracing::error!(target: "platform", "loading cursor: {e}"),
+            }
         }
 
         WM_MOUSEMOVE => {
+            let mut tracking = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                ..Default::default()
+            };
+            if let Err(e) = unsafe { TrackMouseEvent(&mut tracking) } {
+                tracing::error!(target: "platform", "tracking mouse leave: {e}");
+            }
             let p = view_point(get_x_lparam(lp), get_y_lparam(lp));
-            jfn_input_dispatch_mouse_move(p.x, p.y, mouse_modifiers(wp), 0);
+            POINTER_FOCUS
+                .with(|focus| dispatch_tracked_pointer(focus, p, mouse_modifiers(wp), false));
             return LRESULT(0);
         }
 
         WM_MOUSELEAVE => {
-            jfn_input_dispatch_mouse_move(-1, -1, mouse_modifiers(wp), 1);
+            let mut pt = POINT::default();
+            match unsafe { GetCursorPos(&mut pt).and_then(|()| ScreenToClient(hwnd, &mut pt).ok()) }
+            {
+                Ok(()) => POINTER_FOCUS.with(|focus| {
+                    dispatch_tracked_pointer(
+                        focus,
+                        view_point(pt.x, pt.y),
+                        mouse_modifiers(wp),
+                        true,
+                    )
+                }),
+                Err(e) => tracing::error!(target: "platform", "reading mouse leave position: {e}"),
+            }
             return LRESULT(0);
+        }
+        WM_NCDESTROY => {
+            POINTER_FOCUS.set(jfn_input::Target::None);
+            STATE.lock().input_hwnd_raw = 0;
+            crate::menu::owner_destroyed();
         }
 
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONUP
@@ -386,31 +425,23 @@ unsafe extern "system" fn input_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             }
         }
 
-        WM_MOUSEWHEEL => {
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
             let mut pt = POINT {
                 x: get_x_lparam(lp),
                 y: get_y_lparam(lp),
             };
-            unsafe {
-                let _ = ScreenToClient(hwnd, &mut pt);
+            if let Err(e) = unsafe { ScreenToClient(hwnd, &mut pt) }.ok() {
+                tracing::error!(target: "platform", "reading wheel position: {e}");
+                return LRESULT(0);
             }
             let delta = hiword_i16(wp.0 as u32) as i32;
             let p = view_point(pt.x, pt.y);
-            jfn_input_dispatch_scroll(p.x, p.y, 0, delta, mouse_modifiers(wp));
-            return LRESULT(0);
-        }
-
-        WM_MOUSEHWHEEL => {
-            let mut pt = POINT {
-                x: get_x_lparam(lp),
-                y: get_y_lparam(lp),
+            let (dx, dy) = if msg == WM_MOUSEWHEEL {
+                (0, delta)
+            } else {
+                (delta, 0)
             };
-            unsafe {
-                let _ = ScreenToClient(hwnd, &mut pt);
-            }
-            let delta = hiword_i16(wp.0 as u32) as i32;
-            let p = view_point(pt.x, pt.y);
-            jfn_input_dispatch_scroll(p.x, p.y, delta, 0, mouse_modifiers(wp));
+            jfn_input_dispatch_scroll(p.x, p.y, dx, dy, mouse_modifiers(wp));
             return LRESULT(0);
         }
 
@@ -497,8 +528,52 @@ pub(crate) fn jfn_input_windows_run_input_thread(mpv_hwnd: *mut std::ffi::c_void
     };
     unsafe { RegisterClassExW(&wc) };
 
+    if let Err(e) = create_input_child(mpv, hinst, tid) {
+        tracing::error!(target: "platform", "creating input window: {e}");
+        let _ = unsafe { UnregisterClassW(CLASS_NAME, Some(hinst.into())) };
+        STATE.lock().thread_id = 0;
+        return;
+    }
+
+    let mut m = MSG::default();
+    while unsafe { GetMessageW(&mut m, None, 0, 0).0 } > 0 {
+        if m.hwnd.is_invalid() && m.message == WM_JFN_RECREATE_WINDOW {
+            let old = STATE.lock().input_hwnd_raw;
+            if old != 0 {
+                let _ = unsafe { DestroyWindow(HWND(old as *mut std::ffi::c_void)) };
+                STATE.lock().input_hwnd_raw = 0;
+            }
+            if let Err(e) =
+                create_input_child(HWND(m.lParam.0 as *mut std::ffi::c_void), hinst, tid)
+            {
+                tracing::error!(target: "platform", "recreating input window: {e}");
+            }
+            continue;
+        }
+        unsafe {
+            let _ = TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+    }
+
+    if STATE.lock().input_hwnd_raw != 0 {
+        // The child may have been recreated since startup; destroy the current one.
+        let raw = STATE.lock().input_hwnd_raw;
+        let _ = unsafe { DestroyWindow(HWND(raw as *mut std::ffi::c_void)) };
+        STATE.lock().input_hwnd_raw = 0;
+    }
+    let _ = unsafe { UnregisterClassW(CLASS_NAME, Some(hinst.into())) };
+    STATE.lock().thread_id = 0;
+}
+
+/// The child and focus belong to the input thread, including after a VO replacement.
+fn create_input_child(
+    new_mpv_hwnd: HWND,
+    hinst: windows::Win32::Foundation::HMODULE,
+    own_tid: u32,
+) -> windows::core::Result<()> {
     let mut rc = RECT::default();
-    let _ = unsafe { GetClientRect(mpv, &mut rc) };
+    unsafe { GetClientRect(new_mpv_hwnd, &mut rc) }?;
 
     let input_hwnd = unsafe {
         CreateWindowExW(
@@ -510,55 +585,47 @@ pub(crate) fn jfn_input_windows_run_input_thread(mpv_hwnd: *mut std::ffi::c_void
             0,
             rc.right - rc.left,
             rc.bottom - rc.top,
-            Some(mpv),
+            Some(new_mpv_hwnd),
             Some(HMENU(std::ptr::null_mut())),
             Some(hinst.into()),
             None,
         )
-    };
-
-    let input_hwnd = match input_hwnd {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::error!("CreateWindowExW(JellyfinCefInput) failed: {e:?}");
-            STATE.lock().thread_id = 0;
-            return;
-        }
-    };
+    }?;
     STATE.lock().input_hwnd_raw = input_hwnd.0 as usize;
+    let mut ir = RECT::default();
+    let _ = unsafe { GetClientRect(input_hwnd, &mut ir) };
+    let thread_awareness =
+        unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) }.0;
+    tracing::debug!(target: "platform",
+        "input window: size={}x{} parent_client={}x{} thread_awareness={}",
+        ir.right - ir.left, ir.bottom - ir.top, rc.right - rc.left, rc.bottom - rc.top, thread_awareness);
 
-    {
-        let mut ir = RECT::default();
-        let _ = unsafe { GetClientRect(input_hwnd, &mut ir) };
-        let thread_awareness =
-            unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) }.0;
-        tracing::debug!(
-            target: "platform",
-            "input window: size={}x{} parent_client={}x{} thread_awareness={}",
-            ir.right - ir.left, ir.bottom - ir.top,
-            rc.right - rc.left, rc.bottom - rc.top,
-            thread_awareness,
-        );
-    }
-
-    let mpv_tid = unsafe { GetWindowThreadProcessId(mpv, None) };
-    let _ = unsafe { AttachThreadInput(tid, mpv_tid, true) };
+    // Share input queue with the new mpv window so SetFocus across
+    // windows works, same as the initial creation.
+    let mpv_tid = unsafe { GetWindowThreadProcessId(new_mpv_hwnd, None) };
+    let _ = unsafe { AttachThreadInput(own_tid, mpv_tid, true) };
     let _ = unsafe { SetFocus(Some(input_hwnd)) };
+    tracing::debug!(target: "platform", "input window attached to {new_mpv_hwnd:?}");
+    Ok(())
+}
 
-    let mut m = MSG::default();
-    while unsafe { GetMessageW(&mut m, None, 0, 0).0 } > 0 {
-        unsafe {
-            let _ = TranslateMessage(&m);
-            DispatchMessageW(&m);
+/// Post a request to recreate the input child window against
+/// `new_mpv_hwnd_raw`, run on the input thread. See
+/// `create_input_child` and `WM_JFN_RECREATE_WINDOW`.
+pub(crate) fn jfn_input_windows_recreate(new_mpv_hwnd_raw: usize) {
+    let tid = STATE.lock().thread_id;
+    if tid != 0
+        && let Err(e) = unsafe {
+            PostThreadMessageW(
+                tid,
+                WM_JFN_RECREATE_WINDOW,
+                WPARAM(0),
+                LPARAM(new_mpv_hwnd_raw as isize),
+            )
         }
+    {
+        tracing::error!(target: "platform", "delivering input window replacement: {e}");
     }
-
-    if STATE.lock().input_hwnd_raw != 0 {
-        let _ = unsafe { DestroyWindow(input_hwnd) };
-        STATE.lock().input_hwnd_raw = 0;
-    }
-    let _ = unsafe { UnregisterClassW(CLASS_NAME, Some(hinst.into())) };
-    STATE.lock().thread_id = 0;
 }
 
 pub(crate) fn jfn_input_windows_stop_input_thread() {

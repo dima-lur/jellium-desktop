@@ -19,6 +19,9 @@ pub struct WindowSnapshot {
 
 pub trait WindowSource: Send + Sync {
     fn snapshot(&self) -> WindowSnapshot;
+    fn snapshot_with_screen(&self) -> (WindowSnapshot, Option<String>) {
+        (self.snapshot(), None)
+    }
 }
 
 static WINDOW_SUBSCRIBERS: LazyLock<Subscribers> = LazyLock::new(Subscribers::new);

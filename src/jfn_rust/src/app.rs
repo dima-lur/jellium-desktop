@@ -235,6 +235,7 @@ struct MpvInitOptions<'a> {
     backend_byte: u8,
     boot_geometry: Option<&'a str>,
     boot_force_position: bool,
+    screen: Option<usize>,
     boot_window_max: bool,
     embed_wid: Option<i64>,
     hwdec: jfn_config::Hwdec,
@@ -267,6 +268,10 @@ fn init_mpv_handle(opts: MpvInitOptions<'_>) -> *mut jfn_mpv::sys::mpv_handle {
             channels_c.as_ptr()
         },
         geometry: geometry_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+        screen: opts
+            .screen
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(-1),
         wid: opts.embed_wid.unwrap_or(0),
         force_window_position: opts.boot_force_position,
         window_maximized_at_boot: opts.boot_window_max,
@@ -786,11 +791,20 @@ fn boot_mpv_reconcile() -> Option<jfn_gpu_paint::RefreshRate> {
             .reconcile_mpv_size(plat().scale(), logical, physical, locked)
     });
     if let Some(physical) = reconciled {
-        let clamped = plat().clamp_window_geometry(WindowGeometry {
+        let geometry = WindowGeometry {
             w: physical.w,
             h: physical.h,
             position: None,
-        });
+        };
+        let clamped = if let Some(screen) = saved
+            .screen
+            .as_deref()
+            .and_then(|name| plat().restore_screen(name))
+        {
+            jfn_platform_abi::geometry::clamp_size_to_bounds(geometry, screen.bounds)
+        } else {
+            plat().clamp_window_geometry(geometry)
+        };
         let (new_pw, new_ph) = (clamped.w, clamped.h);
         let geom_str = format!("{new_pw}x{new_ph}");
         tracing::info!(target: "Main",
@@ -1012,7 +1026,7 @@ fn run_app(
 
     // Boot geometry resolves before the host prepare so its display probes
     // hit the real server, not the mpv proxy the prepare may install.
-    let Some(boot) = crate::window_geometry::controller().boot() else {
+    let Some((boot, screen)) = crate::window_geometry::controller().boot() else {
         tracing::error!(target: "Main", "boot geometry unrepresentable at the reported scale");
         return 1;
     };
@@ -1035,6 +1049,7 @@ fn run_app(
     let raw = init_mpv_handle(MpvInitOptions {
         backend_byte,
         boot_geometry: mpv_boot.as_ref().map(|w| w.geometry.as_str()),
+        screen,
         boot_force_position: mpv_boot.as_ref().is_some_and(|w| w.force_position),
         boot_window_max: mpv_boot.as_ref().is_some_and(|w| w.maximized),
         embed_wid: plat().mpv_host().embed_wid(),

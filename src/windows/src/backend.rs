@@ -329,6 +329,10 @@ impl Platform for WindowsPlatform {
         }
     }
 
+    fn on_window_handle_changed(&self, id: i64) {
+        crate::platform::win_on_window_handle_changed(id);
+    }
+
     fn set_fullscreen(&self, v: bool) {
         win_set_fullscreen(v);
     }
@@ -364,11 +368,15 @@ impl Platform for WindowsPlatform {
         crate::window::snapshot()?.position
     }
 
+    fn restore_screen(&self, name: &str) -> Option<jfn_platform_abi::geometry::RestoreScreen> {
+        crate::monitor::find(name)
+            .inspect_err(|e| tracing::warn!(target: "platform", "reading monitors: {e}"))
+            .ok()
+            .flatten()
+    }
+
     fn clamp_window_geometry(&self, g: WindowGeometry) -> WindowGeometry {
-        let (mut w, mut h) = (g.w, g.h);
-        let (mut x, mut y) = g.raw_position();
-        win_clamp_window_geometry(&mut w, &mut h, &mut x, &mut y);
-        WindowGeometry::from_raw(w, h, x, y)
+        win_clamp_window_geometry(g)
     }
 
     fn pump(&self) {

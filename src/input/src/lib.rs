@@ -63,11 +63,43 @@ fn target_for_key() -> Target {
 pub fn jfn_input_dispatch_mouse_move(x: i32, y: i32, mods: u32, leave: c_int) {
     let p = LogicalPoint { x, y };
     let (target, state) = target_for_pointer(p);
+    send_pointer(target, state, p, mods, leave != 0);
+}
+
+/// Route movement on a Windows input thread, sending leave to the layer that
+/// received the previous move even when the pointer now hits a different layer.
+#[cfg(target_os = "windows")]
+pub fn dispatch_tracked_pointer(
+    focus: &std::cell::Cell<Target>,
+    p: LogicalPoint,
+    mods: u32,
+    leave: bool,
+) {
+    let (target, state) = if leave {
+        cursor::set_owner(Target::None);
+        (Target::None, sink::shell_state())
+    } else {
+        target_for_pointer(p)
+    };
+    let previous = focus.replace(target);
+    if previous != target {
+        send_pointer(previous, state, p, mods, true);
+    }
+    send_pointer(target, state, p, mods, false);
+}
+
+fn send_pointer(
+    target: Target,
+    state: Option<ShellState>,
+    p: LogicalPoint,
+    mods: u32,
+    leave: bool,
+) {
     match (target, state) {
-        (Target::Shell, _) => with_shell(|s| s.send_mouse_move(p, mods, leave != 0)),
+        (Target::Shell, _) => with_shell(|s| s.send_mouse_move(p, mods, leave)),
         (Target::Web, Some(state)) => {
             let w = to_web_point(p, state);
-            with_web(|b| b.send_mouse_move(w.x, w.y, mods, leave != 0));
+            with_web(|b| b.send_mouse_move(w.x, w.y, mods, leave));
         }
         _ => {}
     }

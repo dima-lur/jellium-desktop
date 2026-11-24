@@ -134,6 +134,7 @@ mod harness {
         fn init(&mut self);
         /// Called for every queued event, in order.
         fn deliver(&mut self, ev: &PlaybackEvent);
+        fn rebind_window(&mut self, _window: isize) {}
         /// Called once on the consumer thread after the queue disconnects.
         fn teardown(&mut self);
     }
@@ -141,6 +142,7 @@ mod harness {
     #[derive(Default)]
     struct Pending {
         events: VecDeque<PlaybackEvent>,
+        window: Option<isize>,
         stopped: bool,
     }
     #[derive(Default)]
@@ -225,18 +227,35 @@ mod harness {
         }
     }
 
+    /// Wake the existing media thread to rebind its native transport.
+    pub fn rebind_window(window: isize) {
+        if let Some(queue) = EVENT_TX.lock().as_ref() {
+            queue.pending.lock().window = Some(window);
+            queue.wake.notify_one();
+        }
+    }
+
     fn consumer_thread<S: QueuedSink>(rx: Arc<Queue>, build: impl FnOnce() -> S) {
         let mut sink = build();
         sink.init();
 
         loop {
-            let (events, stopped) = {
+            let (events, window, stopped) = {
                 let mut pending = rx.pending.lock();
-                while pending.events.is_empty() && !pending.stopped {
+                while pending.events.is_empty() && pending.window.is_none() && !pending.stopped {
                     rx.wake.wait(&mut pending);
                 }
-                (std::mem::take(&mut pending.events), pending.stopped)
+                (
+                    std::mem::take(&mut pending.events),
+                    pending.window.take(),
+                    pending.stopped,
+                )
             };
+            if let Some(window) = window
+                && !stopped
+            {
+                sink.rebind_window(window);
+            }
             for event in events {
                 sink.deliver(&event);
             }
@@ -274,4 +293,4 @@ mod harness {
     }
 }
 
-pub use harness::{Phase, QueuedSink, map_kind_to_phase, run_sink, stop};
+pub use harness::{Phase, QueuedSink, map_kind_to_phase, rebind_window, run_sink, stop};

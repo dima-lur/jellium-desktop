@@ -390,6 +390,13 @@ pub struct Bounds {
     pub h: c_int,
 }
 
+#[derive(Clone, Copy)]
+pub struct RestoreScreen {
+    pub index: usize,
+    pub bounds: Bounds,
+    pub scale: Option<Scale>,
+}
+
 /// Saved window geometry: size plus an optional top-left position. `None`
 /// position asks [`clamp_to_bounds`] to center the window (mpv's own centering
 /// misbehaves when only the width/height are overridden).

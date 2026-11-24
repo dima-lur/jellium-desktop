@@ -58,7 +58,9 @@ impl Inner {
                 .is_ok()
             {
                 let delay_ms = ((period_ns - (now - last)) / 1_000_000).max(1);
-                tasks::post_apply_resize(Arc::clone(self), delay_ms);
+                if !tasks::post_apply_resize(Arc::clone(self), delay_ms) {
+                    self.resize_scheduled.store(false, Ordering::Release);
+                }
             }
         });
     }

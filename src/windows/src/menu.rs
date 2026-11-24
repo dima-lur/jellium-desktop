@@ -13,9 +13,9 @@ use parking_lot::Mutex;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, EndMenu, MENU_ITEM_FLAGS, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, PostMessageW, SetForegroundWindow, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, WM_APP, WM_NULL,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, EndMenu, HMENU, MENU_ITEM_FLAGS, MF_GRAYED,
+    MF_SEPARATOR, MF_STRING, PostMessageW, SetForegroundWindow, TPM_LEFTALIGN, TPM_NONOTIFY,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, WM_APP, WM_NULL,
 };
 use windows::core::PCWSTR;
 
@@ -36,14 +36,22 @@ static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) struct WinMenuHost;
 
+pub(crate) fn owner_destroyed() {
+    CANCELLED.store(true, Ordering::Release);
+    let undelivered = PENDING.lock().take();
+    drop(undelivered);
+}
+
 impl MenuHost for WinMenuHost {
     fn open(&self, req: MenuRequest) {
         let Some(hwnd) = input_hwnd() else {
             return;
         };
-        let displaced = PENDING.lock().replace(req);
-        drop(displaced);
-        let _ = unsafe { PostMessageW(Some(hwnd), WM_JFN_MENU_TRACK, WPARAM(0), LPARAM(0)) };
+        let mut slot = PENDING.lock();
+        let displaced = slot.replace(req);
+        let undelivered = post_track(hwnd, &mut slot);
+        drop(slot);
+        drop((displaced, undelivered));
     }
 
     fn hide(&self) {
@@ -54,16 +62,25 @@ impl MenuHost for WinMenuHost {
     }
 
     fn shutdown(&self) {
-        let pending = PENDING.lock().take();
-        drop(pending);
+        owner_destroyed();
         post_end();
     }
 }
 
 fn post_end() {
-    if let Some(hwnd) = input_hwnd() {
-        let _ = unsafe { PostMessageW(Some(hwnd), WM_JFN_MENU_END, WPARAM(0), LPARAM(0)) };
+    if let Some(hwnd) = input_hwnd()
+        && let Err(e) = unsafe { PostMessageW(Some(hwnd), WM_JFN_MENU_END, WPARAM(0), LPARAM(0)) }
+    {
+        tracing::error!(target: "platform", "menu dismissal could not be delivered: {e}");
     }
+}
+
+fn post_track(hwnd: HWND, slot: &mut Option<MenuRequest>) -> Option<MenuRequest> {
+    if let Err(e) = unsafe { PostMessageW(Some(hwnd), WM_JFN_MENU_TRACK, WPARAM(0), LPARAM(0)) } {
+        tracing::error!(target: "platform", "menu request could not be delivered: {e}");
+        return slot.take();
+    }
+    None
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -76,28 +93,57 @@ fn wide(s: &str) -> Vec<u16> {
 /// Runs on the input thread, from `input_wndproc`.
 pub(crate) fn on_input_message(hwnd: HWND, msg: u32) {
     if msg == WM_JFN_MENU_END {
-        let _ = unsafe { EndMenu() };
+        if TRACKING.load(Ordering::Acquire)
+            && let Err(e) = unsafe { EndMenu() }
+        {
+            tracing::error!(target: "platform", "ending menu: {e}");
+        }
         return;
     }
     if msg != WM_JFN_MENU_TRACK {
         return;
     }
     if TRACKING.load(Ordering::Acquire) {
-        let _ = unsafe { EndMenu() };
-        let _ = unsafe { PostMessageW(Some(hwnd), WM_JFN_MENU_TRACK, WPARAM(0), LPARAM(0)) };
+        if let Err(e) = unsafe { EndMenu() } {
+            tracing::error!(target: "platform", "replacing menu: {e}");
+            let undelivered = PENDING.lock().take();
+            drop(undelivered);
+            return;
+        }
+        let undelivered = post_track(hwnd, &mut PENDING.lock());
+        drop(undelivered);
         return;
     }
     let Some(pending) = PENDING.lock().take() else {
         return;
     };
-    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        return;
+    let menu = match unsafe { CreatePopupMenu() } {
+        Ok(menu) => menu,
+        Err(e) => {
+            tracing::error!(target: "platform", "creating menu: {e}");
+            return;
+        }
     };
+    let picked = track(hwnd, menu, &pending);
+    if let Err(e) = unsafe { DestroyMenu(menu) } {
+        tracing::error!(target: "platform", "destroying menu: {e}");
+    }
+    match picked {
+        Ok(Some(row)) => {
+            if let Err(e) = pending.select(row) {
+                tracing::error!(target: "platform", "menu selection failed: {e}");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::error!(target: "platform", "tracking menu: {e}"),
+    }
+}
 
+fn track(hwnd: HWND, menu: HMENU, pending: &MenuRequest) -> windows::core::Result<Option<usize>> {
     let mut command: usize = 0;
     for (g, group) in pending.groups.iter().enumerate() {
         if g > 0 {
-            let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
+            unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) }?;
         }
         for item in group {
             command += 1;
@@ -107,7 +153,7 @@ pub(crate) fn on_input_message(hwnd: HWND, msg: u32) {
                 MENU_ITEM_FLAGS(MF_STRING.0 | MF_GRAYED.0)
             };
             let label = wide(&item.label);
-            let _ = unsafe { AppendMenuW(menu, flags, command, PCWSTR::from_raw(label.as_ptr())) };
+            unsafe { AppendMenuW(menu, flags, command, PCWSTR::from_raw(label.as_ptr())) }?;
         }
     }
 
@@ -115,12 +161,10 @@ pub(crate) fn on_input_message(hwnd: HWND, msg: u32) {
     let anchor = pending.anchor;
     let (Some(x), Some(y)) = (scale.to_physical(anchor.x), scale.to_physical(anchor.y)) else {
         tracing::error!(target: "platform", "menu anchor {},{} is unrepresentable at scale {scale}", anchor.x, anchor.y);
-        return;
+        return Ok(None);
     };
     let mut pt = POINT { x, y };
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut pt);
-    }
+    unsafe { ClientToScreen(hwnd, &mut pt) }.ok()?;
 
     if let Some(toplevel) = crate::platform::win_hwnd() {
         let _ = unsafe { SetForegroundWindow(toplevel) };
@@ -133,16 +177,11 @@ pub(crate) fn on_input_message(hwnd: HWND, msg: u32) {
     let picked = unsafe { TrackPopupMenuEx(menu, flags, pt.x, pt.y, hwnd, None) };
     TRACKING.store(false, Ordering::Release);
     let _ = unsafe { PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
-    let _ = unsafe { DestroyMenu(menu) };
 
     if CANCELLED.swap(false, Ordering::AcqRel) {
-        return;
+        return Ok(None);
     }
-    if let Some(row) = usize::try_from(picked.0)
+    Ok(usize::try_from(picked.0)
         .ok()
-        .and_then(|picked| picked.checked_sub(1))
-        && let Err(err) = pending.select(row)
-    {
-        tracing::error!(target: "platform", "menu selection failed: {err}");
-    }
+        .and_then(|picked| picked.checked_sub(1)))
 }

@@ -46,6 +46,8 @@ struct WinState {
     metadata: MediaMetadata,
     phase: Option<Phase>,
     position_us: i64,
+    can_next: bool,
+    can_prev: bool,
     throttle: PositionThrottle,
 }
 
@@ -67,7 +69,37 @@ impl WindowsSink {
 
 impl QueuedSink for WindowsSink {
     fn init(&mut self) {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            );
+        }
         self.smtc = init_smtc(self.hwnd_raw);
+    }
+
+    fn rebind_window(&mut self, hwnd: isize) {
+        let thumbnail = self.smtc.take().and_then(|mut old| {
+            let thumbnail = old.cached_thumbnail.take();
+            teardown_smtc(old);
+            thumbnail
+        });
+        self.hwnd_raw = hwnd;
+        self.smtc = init_smtc(hwnd);
+        if let Some(s) = self.smtc.as_mut() {
+            s.cached_thumbnail = thumbnail;
+            let _ = s.smtc.SetIsNextEnabled(self.state.can_next);
+            let _ = s.smtc.SetIsPreviousEnabled(self.state.can_prev);
+            if let Some(phase) = self.state.phase {
+                let status = match phase {
+                    Phase::Playing => MediaPlaybackStatus::Playing,
+                    Phase::Paused => MediaPlaybackStatus::Paused,
+                    Phase::Stopped => MediaPlaybackStatus::Stopped,
+                };
+                let _ = s.smtc.SetPlaybackStatus(status);
+                update_display_properties(&mut self.state, s);
+            }
+        }
     }
 
     fn deliver(&mut self, ev: &PlaybackEvent) {
@@ -90,12 +122,6 @@ struct Smtc {
 }
 
 fn init_smtc(hwnd_raw: isize) -> Option<Smtc> {
-    unsafe {
-        let _ = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_MULTITHREADED,
-        );
-    }
     if hwnd_raw == 0 {
         tracing::error!(target: "Media", "[SMTC] NULL HWND provided");
         return None;
@@ -220,6 +246,8 @@ fn deliver(state: &mut WinState, smtc: &mut Option<Smtc>, ev: &PlaybackEvent) {
             }
         }
         PlaybackEventKind::QueueCapsChanged => {
+            state.can_next = ev.can_go_next;
+            state.can_prev = ev.can_go_prev;
             if let Some(s) = smtc.as_ref() {
                 let _ = s.smtc.SetIsNextEnabled(ev.can_go_next);
                 let _ = s.smtc.SetIsPreviousEnabled(ev.can_go_prev);

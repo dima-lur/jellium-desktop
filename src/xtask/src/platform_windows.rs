@@ -26,7 +26,10 @@ pub fn stage_mpv(out: &Path, mpv_info: &mpv::Mpv, used_external: bool, _bin: &Pa
             }
         }
     }
-    Ok(())
+    xfs::copy_file(
+        &crate::paths::repo_root().join("resources/mpv/scripts/dv-detect.lua"),
+        &out.join("mpv/scripts/dv-detect.lua"),
+    )
 }
 
 pub fn install(build_dir: &Path, prefix: &Path, args: &BuildArgs) -> Result<PathBuf> {
@@ -43,5 +46,9 @@ pub fn install(build_dir: &Path, prefix: &Path, args: &BuildArgs) -> Result<Path
     if let Some(dir) = &args.external_mpv {
         xfs::copy_glob(&dir.join("lib"), prefix, &["*.dll"])?;
     }
+    xfs::copy_file(
+        &build_dir.join("mpv/scripts/dv-detect.lua"),
+        &prefix.join("mpv/scripts/dv-detect.lua"),
+    )?;
     Ok(prefix.to_path_buf())
 }

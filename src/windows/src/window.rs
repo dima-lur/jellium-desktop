@@ -16,8 +16,7 @@ use jfn_platform_abi::{
 use parking_lot::{Condvar, Mutex};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromWindow,
+    ClientToScreen, HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow,
 };
 use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetDpiForWindow, GetThreadDpiAwarenessContext,
@@ -25,7 +24,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect, IsZoomed};
 
-static SNAPSHOT: Mutex<Option<WindowSnapshot>> = Mutex::new(None);
+static SNAPSHOT: Mutex<Option<(WindowSnapshot, Option<String>)>> = Mutex::new(None);
 
 struct NotifyState {
     dirty: bool,
@@ -97,14 +96,15 @@ pub(crate) fn sample() -> Option<PhysicalSize> {
     let dpi = unsafe { GetDpiForWindow(hwnd) };
     let extent = crate::scale::extent(client, dpi)?;
     let fullscreen = crate::platform::win_is_fullscreen();
+    let (position, screen) = window_placement(hwnd).unzip();
     let snap = WindowSnapshot {
         extent: Some(extent),
-        position: window_position(hwnd),
+        position,
         maximized: !fullscreen && unsafe { IsZoomed(hwnd) }.as_bool(),
         fullscreen,
     };
-    let previous = SNAPSHOT.lock().replace(snap);
-    if previous.and_then(|p| p.extent) != Some(extent) {
+    let previous = SNAPSHOT.lock().replace((snap, screen));
+    if previous.and_then(|(p, _)| p.extent) != Some(extent) {
         log_sample(hwnd, dpi, extent);
     }
     Some(client)
@@ -113,21 +113,18 @@ pub(crate) fn sample() -> Option<PhysicalSize> {
 /// Window position relative to the monitor's working area (excludes the
 /// taskbar), in physical pixels. Matches mpv's `--geometry +X+Y` coordinate
 /// system on Windows (`vo_calc_window_geometry` uses the working area).
-fn window_position(hwnd: HWND) -> Option<WindowPos> {
+fn window_placement(hwnd: HWND) -> Option<(WindowPos, String)> {
     let mut wr = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut wr) }.ok()?;
     let mon: HMONITOR = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    let mut mi = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    if !unsafe { GetMonitorInfoW(mon, &mut mi) }.as_bool() {
-        return None;
-    }
-    Some(WindowPos {
-        x: wr.left - mi.rcWork.left,
-        y: wr.top - mi.rcWork.top,
-    })
+    let (screen, work) = crate::monitor::info(mon).ok()?;
+    Some((
+        WindowPos {
+            x: wr.left - work.left,
+            y: wr.top - work.top,
+        },
+        screen,
+    ))
 }
 
 /// The client size, the client origin in screen coordinates, the window rect,
@@ -174,11 +171,11 @@ pub(crate) fn publish_deferred() -> Option<PhysicalSize> {
 /// The stored snapshot, seeded by one [`sample`] when nothing is stored yet —
 /// the boot wait pulls it before `win_init` runs.
 pub(crate) fn snapshot() -> Option<WindowSnapshot> {
-    if let Some(snap) = *SNAPSHOT.lock() {
-        return Some(snap);
+    if let Some((snap, _)) = SNAPSHOT.lock().as_ref() {
+        return Some(*snap);
     }
     sample()?;
-    *SNAPSHOT.lock()
+    SNAPSHOT.lock().as_ref().map(|(snap, _)| *snap)
 }
 
 /// Client size and scale as of the last sample.
@@ -205,6 +202,14 @@ pub(crate) struct WinWindowSource;
 pub(crate) static WIN_WINDOW_SOURCE: WinWindowSource = WinWindowSource;
 
 impl WindowSource for WinWindowSource {
+    fn snapshot_with_screen(&self) -> (WindowSnapshot, Option<String>) {
+        if let Some(pair) = SNAPSHOT.lock().clone() {
+            return pair;
+        }
+        let snap = self.snapshot();
+        SNAPSHOT.lock().clone().unwrap_or((snap, None))
+    }
+
     fn snapshot(&self) -> WindowSnapshot {
         crate::window::snapshot().unwrap_or(WindowSnapshot {
             extent: None,

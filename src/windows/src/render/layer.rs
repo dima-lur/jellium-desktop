@@ -7,7 +7,8 @@ use std::ptr::NonNull;
 use jfn_gpu_paint::{
     FrameSize, Pixels, PresentFailed, SharedTexture, Surface as Painter, WindowTarget,
 };
-use windows::Win32::Graphics::DirectComposition::{IDCompositionVisual, IDCompositionVisual3};
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use windows::Win32::Graphics::DirectComposition::{IDCompositionClip, IDCompositionVisual};
 use windows_core::Interface;
 
 use crate::render::device;
@@ -48,20 +49,18 @@ impl Layer {
         }
     }
 
-    /// Sets the visual's visibility through `IDCompositionVisual3::SetVisible`.
-    /// The swapchain's binding to the visual is untouched, so a layer shown
-    /// again presents into the visual it was already bound to, and an
-    /// externally presented layer keeps its content across a hide.
+    /// An empty clip hides the layer while keeping its swapchain attached.
+    /// Clearing the clip shows it again on the same base DirectComposition visual.
     pub(crate) fn set_visible(&self, visible: bool) -> bool {
-        let visual3: IDCompositionVisual3 = match self.visual.cast() {
-            Ok(visual3) => visual3,
-            Err(e) => {
-                tracing::error!(target: "platform", "IDCompositionVisual3 unavailable: {e:?}");
-                return false;
+        let result = unsafe {
+            if visible {
+                self.visual.SetClip(None::<&IDCompositionClip>)
+            } else {
+                self.visual.SetClip2(&D2D_RECT_F::default())
             }
         };
-        if let Err(e) = unsafe { visual3.SetVisible(visible) } {
-            tracing::error!(target: "platform", "SetVisible failed: {e:?}");
+        if let Err(e) = result {
+            tracing::error!(target: "platform", "setting layer visibility to {visible} failed: {e:?}");
             return false;
         }
         true

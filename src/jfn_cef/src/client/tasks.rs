@@ -18,12 +18,14 @@ wrap_task! {
     }
 }
 
-pub(super) fn post_apply_resize(inner: Arc<Inner>, delay_ms: i64) {
+pub(super) fn post_apply_resize(inner: Arc<Inner>, delay_ms: i64) -> bool {
     let session = Arc::clone(&inner.session);
-    session.dispatch(|| {
-        let mut task = ApplyResizeTask::new(inner);
-        let _ = post_delayed_task(ThreadId::UI, Some(&mut task), delay_ms);
-    });
+    session
+        .dispatch(|| {
+            let mut task = ApplyResizeTask::new(inner);
+            post_delayed_task(ThreadId::UI, Some(&mut task), delay_ms) != 0
+        })
+        .unwrap_or(false)
 }
 
 wrap_task! {

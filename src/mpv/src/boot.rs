@@ -51,6 +51,8 @@ pub struct JfnMpvBoot {
     pub audio_channels: *const c_char,
     /// Optional `<W>x<H>[+x+y]` geometry string from saved settings.
     pub geometry: *const c_char,
+    /// mpv monitor index, or -1 to let the platform choose.
+    pub screen: i32,
     /// Native window ID mpv embeds into (`wid` option); 0 = mpv owns its
     /// own window.
     pub wid: i64,
@@ -163,6 +165,19 @@ fn apply_defaults(
     set("force-window", "yes")?;
     set("idle", "yes")?;
 
+    #[cfg(target_os = "windows")]
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_owned))
+    {
+        let script = exe_dir.join("mpv/scripts/dv-detect.lua");
+        if script.is_file() {
+            handle.set_option_string("scripts", &script.to_string_lossy())?;
+        } else {
+            tracing::warn!(target: "mpv", "Dolby Vision script missing at {}", script.display());
+        }
+    }
+
     Ok(())
 }
 
@@ -185,6 +200,9 @@ fn apply_boot_options(handle: &Handle, boot: &JfnMpvBoot) -> crate::error::Resul
     }
     if let Some(geom) = unsafe { cstr_opt(boot.geometry) } {
         set("geometry", &geom)?;
+    }
+    if boot.screen >= 0 {
+        set("screen", &boot.screen.to_string())?;
     }
     if boot.wid != 0 {
         set("wid", &boot.wid.to_string())?;

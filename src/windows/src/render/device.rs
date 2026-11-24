@@ -3,33 +3,29 @@
 use jfn_gpu_paint::Surfaces;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice3, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
 };
+use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 
 /// The DComp device, the HWND composition target, and the root visual every
 /// surface parents into.
 pub(crate) struct Devices {
     device: IDCompositionDevice,
-    // Keep-alive, never read: dropping the target unbinds the visual tree
-    // from the HWND.
-    _target: IDCompositionTarget,
+    target: Option<IDCompositionTarget>,
     root: IDCompositionVisual,
 }
 
 impl Devices {
     pub(crate) fn create(hwnd: HWND) -> windows_core::Result<Devices> {
         unsafe {
-            // Layer visibility uses IDCompositionVisual3::SetVisible, so the
-            // visuals must come from a V3 device even through the V1 interface.
-            let device: IDCompositionDevice =
-                DCompositionCreateDevice3(None::<&windows_core::IUnknown>)?;
+            let device: IDCompositionDevice = DCompositionCreateDevice(None::<&IDXGIDevice>)?;
             let target = device.CreateTargetForHwnd(hwnd, false)?;
             let root = device.CreateVisual()?;
             target.SetRoot(&root)?;
             device.Commit()?;
             Ok(Devices {
                 device,
-                _target: target,
+                target: Some(target),
                 root,
             })
         }
@@ -37,6 +33,21 @@ impl Devices {
 
     pub(crate) fn root(&self) -> &IDCompositionVisual {
         &self.root
+    }
+
+    pub(crate) fn rebind(&mut self, hwnd: HWND) -> windows_core::Result<()> {
+        // DWM must release the old target before the same root can be
+        // attached to mpv's replacement HWND.
+        self.target = None;
+        unsafe {
+            self.device.Commit()?;
+            self.device.WaitForCommitCompletion()?;
+            let target = self.device.CreateTargetForHwnd(hwnd, false)?;
+            target.SetRoot(&self.root)?;
+            self.device.Commit()?;
+            self.target = Some(target);
+        }
+        Ok(())
     }
 
     pub(crate) fn new_visual(&self) -> windows_core::Result<IDCompositionVisual> {
